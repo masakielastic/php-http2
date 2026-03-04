@@ -15,6 +15,7 @@ final class Http2Connection
     private const FRAME_TYPE_CONTINUATION = 0x09;
     private const ERROR_NO_ERROR = 0x00;
     private const ERROR_PROTOCOL_ERROR = 0x01;
+    private const ERROR_FRAME_SIZE_ERROR = 0x06;
     private const ERROR_STREAM_CLOSED = 0x05;
     private const FLAG_ACK = 0x01;
     private const FLAG_END_STREAM = 0x01;
@@ -460,11 +461,12 @@ final class Http2Connection
 
     private function handleProtocolFailure(Http2Frame $frame, RuntimeException $e): Http2ProtocolErrorEvent
     {
+        $errorCode = $this->classifyErrorCode($e->getMessage());
         if ($this->isStreamError($frame, $e)) {
-            return $this->failStream($frame->streamId, $e->getMessage(), self::ERROR_STREAM_CLOSED);
+            return $this->failStream($frame->streamId, $e->getMessage(), $errorCode);
         }
 
-        return $this->failConnection($e->getMessage(), self::ERROR_PROTOCOL_ERROR, $frame->streamId);
+        return $this->failConnection($e->getMessage(), $errorCode, $frame->streamId);
     }
 
     private function isStreamError(Http2Frame $frame, RuntimeException $e): bool
@@ -488,6 +490,34 @@ final class Http2Connection
         }
 
         return false;
+    }
+
+    private function classifyErrorCode(string $message): int
+    {
+        foreach ([
+            'SETTINGS ACK must have empty payload',
+            'RST_STREAM must have a 4-byte error code',
+            'GOAWAY must include last stream id and error code',
+        ] as $frameSizeMessage) {
+            if ($message === $frameSizeMessage) {
+                return self::ERROR_FRAME_SIZE_ERROR;
+            }
+        }
+
+        foreach ([
+            'HEADERS not allowed in current remote stream state',
+            'DATA not allowed in current remote stream state',
+            'HEADERS not allowed in current local stream state',
+            'DATA not allowed in current local stream state',
+            'invalid local stream transition',
+            'invalid remote stream transition',
+        ] as $streamClosedMessage) {
+            if ($message === $streamClosedMessage) {
+                return self::ERROR_STREAM_CLOSED;
+            }
+        }
+
+        return self::ERROR_PROTOCOL_ERROR;
     }
 
     private function failStream(int $streamId, string $message, int $errorCode): Http2ProtocolErrorEvent
