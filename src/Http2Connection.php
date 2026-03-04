@@ -3,16 +3,17 @@ declare(strict_types=1);
 
 final class Http2Connection
 {
+    public const FRAME_TYPE_DATA = 0x00;
+    public const FRAME_TYPE_HEADERS = 0x01;
+    public const FRAME_TYPE_RST_STREAM = 0x03;
+    public const FRAME_TYPE_SETTINGS = 0x04;
+    public const FRAME_TYPE_PING = 0x06;
+    public const FRAME_TYPE_GOAWAY = 0x07;
+    public const FRAME_TYPE_CONTINUATION = 0x09;
+
     private const ROLE_CLIENT = 'client';
     private const ROLE_SERVER = 'server';
     private const CLIENT_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-    private const FRAME_TYPE_DATA = 0x00;
-    private const FRAME_TYPE_HEADERS = 0x01;
-    private const FRAME_TYPE_RST_STREAM = 0x03;
-    private const FRAME_TYPE_SETTINGS = 0x04;
-    private const FRAME_TYPE_PING = 0x06;
-    private const FRAME_TYPE_GOAWAY = 0x07;
-    private const FRAME_TYPE_CONTINUATION = 0x09;
     private const ERROR_NO_ERROR = 0x00;
     private const ERROR_PROTOCOL_ERROR = 0x01;
     private const ERROR_FRAME_SIZE_ERROR = 0x06;
@@ -24,6 +25,7 @@ final class Http2Connection
     private readonly Http2IncrementalFrameDecoder $decoder;
     private readonly Http2OutboundBuffer $outboundBuffer;
     private readonly Http2BufferedFrameWriter $frameWriter;
+    private readonly Http2FrameProcessor $frameProcessor;
     /** @var array<int, Http2StreamState> */
     private array $streams = [];
     private string $prefaceBuffer = '';
@@ -42,6 +44,7 @@ final class Http2Connection
         $this->decoder = new Http2IncrementalFrameDecoder();
         $this->outboundBuffer = new Http2OutboundBuffer();
         $this->frameWriter = new Http2BufferedFrameWriter($this->outboundBuffer);
+        $this->frameProcessor = new Http2FrameProcessor($this);
     }
 
     public static function client(): self
@@ -83,7 +86,7 @@ final class Http2Connection
             $events[] = new Http2FrameReceivedEvent($frame);
             try {
                 $this->validateIncomingFrame($frame);
-                foreach ($this->processIncomingFrame($frame) as $event) {
+                foreach ($this->frameProcessor->process($frame) as $event) {
                     $events[] = $event;
                 }
             } catch (Http2ProtocolException $e) {
@@ -112,53 +115,6 @@ final class Http2Connection
     /**
      * @return list<Http2Event>
      */
-    private function processIncomingFrame(Http2Frame $frame): array
-    {
-        return match ($frame->type) {
-            self::FRAME_TYPE_SETTINGS => $this->handleSettingsFrame($frame),
-            self::FRAME_TYPE_RST_STREAM => $this->handleRstStreamFrame($frame),
-            self::FRAME_TYPE_PING => $this->handlePingFrameWithEvents($frame),
-            self::FRAME_TYPE_HEADERS => $this->handleHeadersFrame($frame),
-            self::FRAME_TYPE_CONTINUATION => $this->handleContinuationFrame($frame),
-            self::FRAME_TYPE_DATA => $this->handleDataFrame($frame),
-            self::FRAME_TYPE_GOAWAY => [$this->handleGoAwayFrame($frame)],
-            default => [],
-        };
-    }
-
-    /**
-     * @return list<Http2Event>
-     */
-    private function handlePingFrameWithEvents(Http2Frame $frame): array
-    {
-        $this->handlePingFrame($frame);
-
-        return [];
-    }
-
-    /**
-     * @return list<Http2Event>
-     */
-    private function handleDataFrame(Http2Frame $frame): array
-    {
-        $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
-        $this->recordDataFrame($frame->streamId, $endStream);
-
-        $events = [
-            new Http2DataReceivedEvent($frame->streamId, $frame->payload, $endStream),
-        ];
-
-        foreach ($this->completionEventsForStream($frame->streamId) as $event) {
-            $events[] = $event;
-        }
-
-        if ($endStream) {
-            $events[] = new Http2StreamEndedEvent($frame->streamId);
-        }
-
-        return $events;
-    }
-
     /**
      * @return list<Http2Event>
      */
@@ -518,5 +474,73 @@ final class Http2Connection
         }
 
         return $this->streams[$streamId];
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    public function processSettingsFrame(Http2Frame $frame): array
+    {
+        return $this->handleSettingsFrame($frame);
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    public function processRstStreamFrame(Http2Frame $frame): array
+    {
+        return $this->handleRstStreamFrame($frame);
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    public function processPingFrame(Http2Frame $frame): array
+    {
+        $this->handlePingFrame($frame);
+        return [];
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    public function processHeadersFrame(Http2Frame $frame): array
+    {
+        return $this->handleHeadersFrame($frame);
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    public function processContinuationFrame(Http2Frame $frame): array
+    {
+        return $this->handleContinuationFrame($frame);
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    public function processDataFrame(Http2Frame $frame): array
+    {
+        $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
+        $this->recordDataFrame($frame->streamId, $endStream);
+
+        $events = [new Http2DataReceivedEvent($frame->streamId, $frame->payload, $endStream)];
+        foreach ($this->completionEventsForStream($frame->streamId) as $event) {
+            $events[] = $event;
+        }
+        if ($endStream) {
+            $events[] = new Http2StreamEndedEvent($frame->streamId);
+        }
+
+        return $events;
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    public function processGoAwayFrame(Http2Frame $frame): array
+    {
+        return [$this->handleGoAwayFrame($frame)];
     }
 }
