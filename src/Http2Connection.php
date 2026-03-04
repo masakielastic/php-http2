@@ -129,7 +129,7 @@ final class Http2Connection
     public function sendHeaders(int $streamId, string $headerBlock, bool $endStream = false): void
     {
         $state = $this->getOrCreateStreamState($streamId);
-        $state->locallyInitiated = true;
+        $state->openLocal($endStream);
 
         $flags = self::FLAG_END_HEADERS;
         if ($endStream) {
@@ -141,6 +141,10 @@ final class Http2Connection
 
     public function sendData(int $streamId, string $payload, bool $endStream = false): void
     {
+        if ($endStream) {
+            $this->getOrCreateStreamState($streamId)->markLocalClosed();
+        }
+
         $flags = $endStream ? self::FLAG_END_STREAM : 0x00;
         $this->frameWriter->writeFrame(self::FRAME_TYPE_DATA, $flags, $streamId, $payload);
     }
@@ -300,9 +304,7 @@ final class Http2Connection
         $state->headersReceived = true;
         $state->headerBlock = $headerBlock;
         $state->headers = $decodedHeaders;
-        if ($endStream) {
-            $state->endStreamReceived = true;
-        }
+        $state->openRemote($endStream);
     }
 
     private function recordDataFrame(int $streamId, bool $endStream): void
@@ -313,7 +315,7 @@ final class Http2Connection
         }
 
         if ($endStream) {
-            $state->endStreamReceived = true;
+            $state->markRemoteClosed();
         }
     }
 
@@ -327,7 +329,7 @@ final class Http2Connection
         }
 
         $state = $this->getOrCreateStreamState($streamId);
-        if (!$state->headersReceived || !$state->endStreamReceived || $state->requestEmitted) {
+        if (!$state->headersReceived || !$state->isRemoteClosed() || $state->requestEmitted) {
             return [];
         }
 
@@ -352,7 +354,7 @@ final class Http2Connection
         }
 
         $state = $this->getOrCreateStreamState($streamId);
-        if (!$state->locallyInitiated || !$state->headersReceived || !$state->endStreamReceived || $state->responseEmitted) {
+        if (!$state->locallyInitiated || !$state->headersReceived || !$state->isRemoteClosed() || $state->responseEmitted) {
             return [];
         }
 
