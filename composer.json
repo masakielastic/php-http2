@@ -1,0 +1,23 @@
+{
+    "name": "masakielastic/http2",
+    "version": "0.1.0",
+    "description": "Minimal HTTP/2 client and server experiments in PHP",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.1",
+        "ext-openssl": "*"
+    },
+    "suggest": {
+        "ext-sockets": "Required for the h2c socket server."
+    },
+    "autoload": {
+        "files": [
+            "src/autoload.php"
+        ]
+    },
+    "bin": [
+        "client.php",
+        "server.php"
+    ]
+}
