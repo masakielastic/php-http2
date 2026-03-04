@@ -316,7 +316,7 @@ final class Http2Connection
             }
         }
 
-        $state = $this->recordHeadersFrame($streamId, $headerBlock, $decodedHeaders, $endStream);
+        $state = $this->applyRemoteHeadersFrame($streamId, $headerBlock, $decodedHeaders, $endStream);
 
         return $this->streamEventFactory->eventsForHeadersFrame(
             $streamId,
@@ -330,7 +330,7 @@ final class Http2Connection
     /**
      * @param list<array{name: string, value: string}>|null $decodedHeaders
      */
-    private function recordHeadersFrame(int $streamId, string $headerBlock, ?array $decodedHeaders, bool $endStream): Http2StreamState
+    private function applyRemoteHeadersFrame(int $streamId, string $headerBlock, ?array $decodedHeaders, bool $endStream): Http2StreamState
     {
         $state = $this->getOrCreateStreamState($streamId);
         $state->headersReceived = true;
@@ -341,7 +341,7 @@ final class Http2Connection
         return $state;
     }
 
-    private function recordDataFrame(int $streamId, bool $endStream): Http2StreamState
+    private function applyRemoteDataFrame(int $streamId, bool $endStream): Http2StreamState
     {
         $state = $this->getOrCreateStreamState($streamId);
         if (!$state->headersReceived || !$state->allowsRemoteData()) {
@@ -439,7 +439,7 @@ final class Http2Connection
     public function processDataFrame(Http2Frame $frame): array
     {
         $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
-        $state = $this->recordDataFrame($frame->streamId, $endStream);
+        $state = $this->applyRemoteDataFrame($frame->streamId, $endStream);
 
         return $this->streamEventFactory->eventsForDataFrame(
             $frame->streamId,
