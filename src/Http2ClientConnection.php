@@ -155,6 +155,20 @@ final class Http2ClientConnection
                     break 2;
                 }
 
+                if ($event instanceof Http2ProtocolErrorEvent) {
+                    $this->logger->log(sprintf(
+                        '[!] protocol error: %s (error_code=%d%s)',
+                        $event->message,
+                        $event->errorCode,
+                        $event->streamId !== null ? sprintf(', stream=%d', $event->streamId) : ''
+                    ));
+                    if ($event->connectionError) {
+                        $this->flushOutbound($transport, $protocol);
+                        break 2;
+                    }
+                    continue;
+                }
+
                 if ($event instanceof Http2StreamResetEvent && $event->streamId === self::REQUEST_STREAM_ID) {
                     $this->logger->log(sprintf('RST_STREAM received on response stream; error_code=%d', $event->errorCode));
                     break 2;

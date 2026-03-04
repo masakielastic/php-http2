@@ -13,6 +13,9 @@ final class Http2Connection
     private const FRAME_TYPE_PING = 0x06;
     private const FRAME_TYPE_GOAWAY = 0x07;
     private const FRAME_TYPE_CONTINUATION = 0x09;
+    private const ERROR_NO_ERROR = 0x00;
+    private const ERROR_PROTOCOL_ERROR = 0x01;
+    private const ERROR_STREAM_CLOSED = 0x05;
     private const FLAG_ACK = 0x01;
     private const FLAG_END_STREAM = 0x01;
     private const FLAG_END_HEADERS = 0x04;
@@ -76,63 +79,70 @@ final class Http2Connection
         $this->decoder->append($payload);
 
         while (($frame = $this->decoder->nextFrame()) !== null) {
-            if ($this->goAwayReceived && $frame->type !== self::FRAME_TYPE_GOAWAY) {
-                throw new RuntimeException('received frame after GOAWAY');
-            }
-
-            if ($this->continuationStreamId !== null && $frame->type !== self::FRAME_TYPE_CONTINUATION) {
-                throw new RuntimeException('expected CONTINUATION frame');
-            }
-
             $events[] = new Http2FrameReceivedEvent($frame);
+            try {
+                if ($this->goAwayReceived && $frame->type !== self::FRAME_TYPE_GOAWAY) {
+                    throw new RuntimeException('received frame after GOAWAY');
+                }
 
-            switch ($frame->type) {
-                case self::FRAME_TYPE_SETTINGS:
-                    foreach ($this->handleSettingsFrame($frame) as $event) {
-                        $events[] = $event;
-                    }
-                    break;
+                if ($this->continuationStreamId !== null && $frame->type !== self::FRAME_TYPE_CONTINUATION) {
+                    throw new RuntimeException('expected CONTINUATION frame');
+                }
 
-                case self::FRAME_TYPE_RST_STREAM:
-                    foreach ($this->handleRstStreamFrame($frame) as $event) {
-                        $events[] = $event;
-                    }
-                    break;
+                switch ($frame->type) {
+                    case self::FRAME_TYPE_SETTINGS:
+                        foreach ($this->handleSettingsFrame($frame) as $event) {
+                            $events[] = $event;
+                        }
+                        break;
 
-                case self::FRAME_TYPE_PING:
-                    $this->handlePingFrame($frame);
-                    break;
+                    case self::FRAME_TYPE_RST_STREAM:
+                        foreach ($this->handleRstStreamFrame($frame) as $event) {
+                            $events[] = $event;
+                        }
+                        break;
 
-                case self::FRAME_TYPE_HEADERS:
-                    foreach ($this->handleHeadersFrame($frame) as $event) {
-                        $events[] = $event;
-                    }
-                    break;
+                    case self::FRAME_TYPE_PING:
+                        $this->handlePingFrame($frame);
+                        break;
 
-                case self::FRAME_TYPE_CONTINUATION:
-                    foreach ($this->handleContinuationFrame($frame) as $event) {
-                        $events[] = $event;
-                    }
-                    break;
+                    case self::FRAME_TYPE_HEADERS:
+                        foreach ($this->handleHeadersFrame($frame) as $event) {
+                            $events[] = $event;
+                        }
+                        break;
 
-                case self::FRAME_TYPE_DATA:
-                    $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
-                    $this->recordDataFrame($frame->streamId, $endStream);
-                    $events[] = new Http2DataReceivedEvent($frame->streamId, $frame->payload, $endStream);
-                    foreach ($this->emitRequestReceivedIfComplete($frame->streamId) as $event) {
-                        $events[] = $event;
-                    }
-                    foreach ($this->emitResponseReceivedIfComplete($frame->streamId) as $event) {
-                        $events[] = $event;
-                    }
-                    if ($endStream) {
-                        $events[] = new Http2StreamEndedEvent($frame->streamId);
-                    }
-                    break;
+                    case self::FRAME_TYPE_CONTINUATION:
+                        foreach ($this->handleContinuationFrame($frame) as $event) {
+                            $events[] = $event;
+                        }
+                        break;
 
-                case self::FRAME_TYPE_GOAWAY:
-                    $events[] = $this->handleGoAwayFrame($frame);
+                    case self::FRAME_TYPE_DATA:
+                        $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
+                        $this->recordDataFrame($frame->streamId, $endStream);
+                        $events[] = new Http2DataReceivedEvent($frame->streamId, $frame->payload, $endStream);
+                        foreach ($this->emitRequestReceivedIfComplete($frame->streamId) as $event) {
+                            $events[] = $event;
+                        }
+                        foreach ($this->emitResponseReceivedIfComplete($frame->streamId) as $event) {
+                            $events[] = $event;
+                        }
+                        if ($endStream) {
+                            $events[] = new Http2StreamEndedEvent($frame->streamId);
+                        }
+                        break;
+
+                    case self::FRAME_TYPE_GOAWAY:
+                        $events[] = $this->handleGoAwayFrame($frame);
+                        break;
+                }
+            } catch (RuntimeException $e) {
+                $error = $this->handleProtocolFailure($frame, $e);
+                $events[] = $error;
+                if ($error->connectionError) {
                     break;
+                }
             }
         }
 
@@ -212,7 +222,8 @@ final class Http2Connection
         }
 
         if ($this->prefaceBuffer !== self::CLIENT_PREFACE) {
-            throw new RuntimeException('invalid client preface');
+            $events[] = $this->failConnection('invalid client preface', self::ERROR_PROTOCOL_ERROR);
+            return '';
         }
 
         $this->prefaceReceived = true;
@@ -445,6 +456,56 @@ final class Http2Connection
                 $state->headers,
             ),
         ];
+    }
+
+    private function handleProtocolFailure(Http2Frame $frame, RuntimeException $e): Http2ProtocolErrorEvent
+    {
+        if ($this->isStreamError($frame, $e)) {
+            return $this->failStream($frame->streamId, $e->getMessage(), self::ERROR_STREAM_CLOSED);
+        }
+
+        return $this->failConnection($e->getMessage(), self::ERROR_PROTOCOL_ERROR, $frame->streamId);
+    }
+
+    private function isStreamError(Http2Frame $frame, RuntimeException $e): bool
+    {
+        if ($frame->streamId === 0) {
+            return false;
+        }
+
+        $message = $e->getMessage();
+        foreach ([
+            'HEADERS not allowed in current remote stream state',
+            'DATA not allowed in current remote stream state',
+            'HEADERS not allowed in current local stream state',
+            'DATA not allowed in current local stream state',
+            'invalid local stream transition',
+            'invalid remote stream transition',
+        ] as $pattern) {
+            if ($message === $pattern) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function failStream(int $streamId, string $message, int $errorCode): Http2ProtocolErrorEvent
+    {
+        if ($streamId !== 0) {
+            $this->resetStream($streamId, $errorCode);
+        }
+
+        return new Http2ProtocolErrorEvent($message, $errorCode, $streamId, false);
+    }
+
+    private function failConnection(string $message, int $errorCode, ?int $streamId = null): Http2ProtocolErrorEvent
+    {
+        if (!$this->goAwaySent) {
+            $this->sendGoAway($streamId ?? 0, $errorCode);
+        }
+
+        return new Http2ProtocolErrorEvent($message, $errorCode, $streamId, true);
     }
 
     private function getOrCreateStreamState(int $streamId): Http2StreamState

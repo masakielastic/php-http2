@@ -96,3 +96,14 @@ final class Http2StreamResetEvent implements Http2Event
     ) {
     }
 }
+
+final class Http2ProtocolErrorEvent implements Http2Event
+{
+    public function __construct(
+        public readonly string $message,
+        public readonly int $errorCode,
+        public readonly ?int $streamId = null,
+        public readonly bool $connectionError = true,
+    ) {
+    }
+}

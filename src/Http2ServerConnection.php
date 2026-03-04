@@ -62,6 +62,20 @@ final class Http2ServerConnection
                     continue;
                 }
 
+                if ($event instanceof Http2ProtocolErrorEvent) {
+                    $this->logger->log(sprintf(
+                        '[!] protocol error: %s (error_code=%d%s)',
+                        $event->message,
+                        $event->errorCode,
+                        $event->streamId !== null ? sprintf(', stream=%d', $event->streamId) : ''
+                    ));
+                    if ($event->connectionError) {
+                        $this->flushOutbound($transport, $protocol);
+                        return;
+                    }
+                    continue;
+                }
+
                 if ($event instanceof Http2GoAwayReceivedEvent) {
                     $this->logger->log(sprintf(
                         'GOAWAY received; last_stream_id=%d error_code=%d',
