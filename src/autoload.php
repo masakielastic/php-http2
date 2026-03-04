@@ -22,6 +22,7 @@ require_once __DIR__ . '/Http2BufferedFrameWriter.php';
 require_once __DIR__ . '/Http2FrameSender.php';
 require_once __DIR__ . '/Http2ControlFrameHandler.php';
 require_once __DIR__ . '/Http2HeaderFrameHandler.php';
+require_once __DIR__ . '/Http2DataFrameHandler.php';
 require_once __DIR__ . '/Http2IncrementalFrameDecoder.php';
 require_once __DIR__ . '/Http2Event.php';
 require_once __DIR__ . '/Http2FrameProcessor.php';

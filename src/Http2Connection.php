@@ -25,6 +25,7 @@ final class Http2Connection
     private readonly Http2FrameSender $frameSender;
     private readonly Http2ControlFrameHandler $controlFrameHandler;
     private readonly Http2HeaderFrameHandler $headerFrameHandler;
+    private readonly Http2DataFrameHandler $dataFrameHandler;
     private readonly Http2FrameProcessor $frameProcessor;
     private readonly Http2CompletionEventFactory $completionEventFactory;
     private readonly Http2StreamEventFactory $streamEventFactory;
@@ -55,6 +56,10 @@ final class Http2Connection
         $this->headerFrameHandler = new Http2HeaderFrameHandler(
             $this->continuationBuffer,
             $this->headerDecoder,
+            $this->streamEventFactory,
+            fn (int $streamId): Http2StreamState => $this->getOrCreateStreamState($streamId),
+        );
+        $this->dataFrameHandler = new Http2DataFrameHandler(
             $this->streamEventFactory,
             fn (int $streamId): Http2StreamState => $this->getOrCreateStreamState($streamId),
         );
@@ -194,20 +199,6 @@ final class Http2Connection
         );
     }
 
-    private function applyRemoteDataFrame(int $streamId, bool $endStream): Http2StreamState
-    {
-        $state = $this->getOrCreateStreamState($streamId);
-        if (!$state->headersReceived || !$state->allowsRemoteData()) {
-            throw new Http2ProtocolException('DATA not allowed in current remote stream state', self::ERROR_STREAM_CLOSED, $streamId, false);
-        }
-
-        if ($endStream) {
-            $state->transitionOnRemoteEndStream();
-        }
-
-        return $state;
-    }
-
     private function handleProtocolFailure(Http2Frame $frame, Http2ProtocolException $e): Http2ProtocolErrorEvent
     {
         $streamId = $e->streamId ?? ($frame->streamId !== 0 ? $frame->streamId : null);
@@ -290,15 +281,7 @@ final class Http2Connection
      */
     public function processDataFrame(Http2Frame $frame): array
     {
-        $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
-        $state = $this->applyRemoteDataFrame($frame->streamId, $endStream);
-
-        return $this->streamEventFactory->eventsForDataFrame(
-            $frame->streamId,
-            $frame->payload,
-            $endStream,
-            $state,
-        );
+        return $this->dataFrameHandler->processDataFrame($frame);
     }
 
     /**
