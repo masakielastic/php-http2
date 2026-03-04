@@ -19,6 +19,10 @@ final class Http2StreamState
 
     public function openLocal(bool $endStream): void
     {
+        if (!$this->canSendHeaders()) {
+            throw new RuntimeException('HEADERS not allowed in current local stream state');
+        }
+
         $this->locallyInitiated = true;
 
         if ($this->state === self::STATE_IDLE) {
@@ -33,6 +37,10 @@ final class Http2StreamState
 
     public function openRemote(bool $endStream): void
     {
+        if (!$this->canReceiveHeaders()) {
+            throw new RuntimeException('HEADERS not allowed in current remote stream state');
+        }
+
         if ($this->state === self::STATE_IDLE) {
             $this->state = $endStream ? self::STATE_HALF_CLOSED_REMOTE : self::STATE_OPEN;
             return;
@@ -68,5 +76,25 @@ final class Http2StreamState
     public function isRemoteClosed(): bool
     {
         return $this->state === self::STATE_HALF_CLOSED_REMOTE || $this->state === self::STATE_CLOSED;
+    }
+
+    public function canSendHeaders(): bool
+    {
+        return $this->state === self::STATE_IDLE || $this->state === self::STATE_OPEN || $this->state === self::STATE_HALF_CLOSED_REMOTE;
+    }
+
+    public function canReceiveHeaders(): bool
+    {
+        return $this->state === self::STATE_IDLE || $this->state === self::STATE_OPEN || $this->state === self::STATE_HALF_CLOSED_LOCAL;
+    }
+
+    public function canSendData(): bool
+    {
+        return $this->state === self::STATE_OPEN || $this->state === self::STATE_HALF_CLOSED_REMOTE;
+    }
+
+    public function canReceiveData(): bool
+    {
+        return $this->state === self::STATE_OPEN || $this->state === self::STATE_HALF_CLOSED_LOCAL;
     }
 }

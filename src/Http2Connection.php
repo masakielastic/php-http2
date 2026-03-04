@@ -141,8 +141,13 @@ final class Http2Connection
 
     public function sendData(int $streamId, string $payload, bool $endStream = false): void
     {
+        $state = $this->getOrCreateStreamState($streamId);
+        if (!$state->canSendData()) {
+            throw new RuntimeException('DATA not allowed in current local stream state');
+        }
+
         if ($endStream) {
-            $this->getOrCreateStreamState($streamId)->markLocalClosed();
+            $state->markLocalClosed();
         }
 
         $flags = $endStream ? self::FLAG_END_STREAM : 0x00;
@@ -310,8 +315,8 @@ final class Http2Connection
     private function recordDataFrame(int $streamId, bool $endStream): void
     {
         $state = $this->getOrCreateStreamState($streamId);
-        if (!$state->headersReceived) {
-            throw new RuntimeException('DATA received before request headers');
+        if (!$state->headersReceived || !$state->canReceiveData()) {
+            throw new RuntimeException('DATA not allowed in current remote stream state');
         }
 
         if ($endStream) {
