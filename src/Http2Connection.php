@@ -307,14 +307,7 @@ final class Http2Connection
      */
     private function buildCompletedHeadersEvents(int $streamId, string $headerBlock, bool $endStream): array
     {
-        $decodedHeaders = null;
-        if ($this->headerDecoder !== null) {
-            try {
-                $decodedHeaders = $this->headerDecoder->decode($headerBlock);
-            } catch (Throwable) {
-                $decodedHeaders = null;
-            }
-        }
+        $decodedHeaders = $this->decodeHeadersBlock($headerBlock);
 
         $state = $this->applyRemoteHeadersFrame($streamId, $headerBlock, $decodedHeaders, $endStream);
 
@@ -325,6 +318,22 @@ final class Http2Connection
             $decodedHeaders,
             $state,
         );
+    }
+
+    /**
+     * @return list<array{name: string, value: string}>|null
+     */
+    private function decodeHeadersBlock(string $headerBlock): ?array
+    {
+        if ($this->headerDecoder === null) {
+            return null;
+        }
+
+        try {
+            return $this->headerDecoder->decode($headerBlock);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**
