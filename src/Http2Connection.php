@@ -26,6 +26,7 @@ final class Http2Connection
     private readonly Http2OutboundBuffer $outboundBuffer;
     private readonly Http2BufferedFrameWriter $frameWriter;
     private readonly Http2FrameProcessor $frameProcessor;
+    private readonly Http2CompletionEventFactory $completionEventFactory;
     /** @var array<int, Http2StreamState> */
     private array $streams = [];
     private string $prefaceBuffer = '';
@@ -45,6 +46,7 @@ final class Http2Connection
         $this->outboundBuffer = new Http2OutboundBuffer();
         $this->frameWriter = new Http2BufferedFrameWriter($this->outboundBuffer);
         $this->frameProcessor = new Http2FrameProcessor($this);
+        $this->completionEventFactory = new Http2CompletionEventFactory($this->role);
     }
 
     public static function client(): self
@@ -112,25 +114,12 @@ final class Http2Connection
         }
     }
 
-    /**
-     * @return list<Http2Event>
-     */
-    /**
-     * @return list<Http2Event>
-     */
     private function completionEventsForStream(int $streamId): array
     {
-        $events = [];
-
-        foreach ($this->emitRequestReceivedIfComplete($streamId) as $event) {
-            $events[] = $event;
-        }
-
-        foreach ($this->emitResponseReceivedIfComplete($streamId) as $event) {
-            $events[] = $event;
-        }
-
-        return $events;
+        return $this->completionEventFactory->completionEventsForStream(
+            $streamId,
+            $this->getOrCreateStreamState($streamId),
+        );
     }
 
     public function sendHeaders(int $streamId, string $headerBlock, bool $endStream = false): void
@@ -387,56 +376,6 @@ final class Http2Connection
         if ($endStream) {
             $state->markRemoteClosed();
         }
-    }
-
-    /**
-     * @return list<Http2Event>
-     */
-    private function emitRequestReceivedIfComplete(int $streamId): array
-    {
-        if ($this->role !== self::ROLE_SERVER) {
-            return [];
-        }
-
-        $state = $this->getOrCreateStreamState($streamId);
-        if (!$state->headersReceived || !$state->isRemoteClosed() || $state->requestEmitted) {
-            return [];
-        }
-
-        $state->requestEmitted = true;
-
-        return [
-            new Http2RequestReceivedEvent(
-                $streamId,
-                $state->headerBlock ?? '',
-                $state->headers,
-            ),
-        ];
-    }
-
-    /**
-     * @return list<Http2Event>
-     */
-    private function emitResponseReceivedIfComplete(int $streamId): array
-    {
-        if ($this->role !== self::ROLE_CLIENT) {
-            return [];
-        }
-
-        $state = $this->getOrCreateStreamState($streamId);
-        if (!$state->locallyInitiated || !$state->headersReceived || !$state->isRemoteClosed() || $state->responseEmitted) {
-            return [];
-        }
-
-        $state->responseEmitted = true;
-
-        return [
-            new Http2ResponseReceivedEvent(
-                $streamId,
-                $state->headerBlock ?? '',
-                $state->headers,
-            ),
-        ];
     }
 
     private function handleProtocolFailure(Http2Frame $frame, Http2ProtocolException $e): Http2ProtocolErrorEvent
