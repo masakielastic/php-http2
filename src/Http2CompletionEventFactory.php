@@ -3,8 +3,13 @@ declare(strict_types=1);
 
 final class Http2CompletionEventFactory
 {
-    public function __construct(private readonly string $role)
+    private readonly Http2RequestCompletionEmitter $requestEmitter;
+    private readonly Http2ResponseCompletionEmitter $responseEmitter;
+
+    public function __construct(string $role)
     {
+        $this->requestEmitter = new Http2RequestCompletionEmitter($role === 'server');
+        $this->responseEmitter = new Http2ResponseCompletionEmitter($role === 'client');
     }
 
     /**
@@ -14,54 +19,16 @@ final class Http2CompletionEventFactory
     {
         $events = [];
 
-        $requestEvent = $this->requestReceivedEvent($streamId, $state);
+        $requestEvent = $this->requestEmitter->requestReceivedEvent($streamId, $state);
         if ($requestEvent !== null) {
             $events[] = $requestEvent;
         }
 
-        $responseEvent = $this->responseReceivedEvent($streamId, $state);
+        $responseEvent = $this->responseEmitter->responseReceivedEvent($streamId, $state);
         if ($responseEvent !== null) {
             $events[] = $responseEvent;
         }
 
         return $events;
-    }
-
-    private function requestReceivedEvent(int $streamId, Http2StreamState $state): ?Http2RequestReceivedEvent
-    {
-        if ($this->role !== 'server') {
-            return null;
-        }
-
-        if (!$state->headersReceived || !$state->isRemoteClosed() || $state->requestEmitted) {
-            return null;
-        }
-
-        $state->requestEmitted = true;
-
-        return new Http2RequestReceivedEvent(
-            $streamId,
-            $state->headerBlock ?? '',
-            $state->headers,
-        );
-    }
-
-    private function responseReceivedEvent(int $streamId, Http2StreamState $state): ?Http2ResponseReceivedEvent
-    {
-        if ($this->role !== 'client') {
-            return null;
-        }
-
-        if (!$state->locallyInitiated || !$state->headersReceived || !$state->isRemoteClosed() || $state->responseEmitted) {
-            return null;
-        }
-
-        $state->responseEmitted = true;
-
-        return new Http2ResponseReceivedEvent(
-            $streamId,
-            $state->headerBlock ?? '',
-            $state->headers,
-        );
     }
 }

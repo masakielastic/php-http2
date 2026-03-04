@@ -44,7 +44,7 @@ final class Http2FrameSender
         $this->frameWriter->writeFrame(Http2Connection::FRAME_TYPE_GOAWAY, 0x00, 0, $payload);
     }
 
-    public function sendConnectionPrefaceAndSettings(string $preface): void
+    public function sendInitialSettings(): void
     {
         $this->frameWriter->writeFrame(Http2Connection::FRAME_TYPE_SETTINGS, 0x00, 0, '');
     }

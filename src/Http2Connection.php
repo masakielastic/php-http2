@@ -28,6 +28,7 @@ final class Http2Connection
     private readonly Http2FrameSender $frameSender;
     private readonly Http2FrameProcessor $frameProcessor;
     private readonly Http2CompletionEventFactory $completionEventFactory;
+    private readonly Http2StreamEventFactory $streamEventFactory;
     private readonly Http2PrefaceHandler $prefaceHandler;
     private readonly Http2ContinuationBuffer $continuationBuffer;
     /** @var array<int, Http2StreamState> */
@@ -46,6 +47,7 @@ final class Http2Connection
         $this->frameSender = new Http2FrameSender($this->frameWriter);
         $this->frameProcessor = new Http2FrameProcessor($this);
         $this->completionEventFactory = new Http2CompletionEventFactory($this->role);
+        $this->streamEventFactory = new Http2StreamEventFactory($this->completionEventFactory);
         $this->prefaceHandler = new Http2PrefaceHandler(self::CLIENT_PREFACE);
         $this->continuationBuffer = new Http2ContinuationBuffer();
     }
@@ -67,7 +69,7 @@ final class Http2Connection
         }
 
         $this->outboundBuffer->append(self::CLIENT_PREFACE);
-        $this->frameSender->sendConnectionPrefaceAndSettings(self::CLIENT_PREFACE);
+        $this->frameSender->sendInitialSettings();
     }
 
     /**
@@ -118,14 +120,6 @@ final class Http2Connection
                 true
             );
         }
-    }
-
-    private function completionEventsForStream(int $streamId): array
-    {
-        return $this->completionEventFactory->completionEventsForStream(
-            $streamId,
-            $this->getOrCreateStreamState($streamId),
-        );
     }
 
     public function sendHeaders(int $streamId, string $headerBlock, bool $endStream = false): void
@@ -185,7 +179,7 @@ final class Http2Connection
             $events,
             function (array &$events): void {
                 $events[] = new Http2ConnectionPrefaceReceivedEvent();
-                $this->frameWriter->writeFrame(self::FRAME_TYPE_SETTINGS, 0x00, 0, '');
+                $this->frameSender->sendInitialSettings();
             },
             fn (): Http2ProtocolErrorEvent => $this->failConnection('invalid client preface', self::ERROR_PROTOCOL_ERROR),
         );
@@ -322,31 +316,32 @@ final class Http2Connection
             }
         }
 
-        $this->recordHeadersFrame($streamId, $headerBlock, $decodedHeaders, $endStream);
-        $events = [new Http2HeadersReceivedEvent($streamId, $headerBlock, $endStream, $decodedHeaders)];
-        foreach ($this->completionEventsForStream($streamId) as $event) {
-            $events[] = $event;
-        }
-        if ($endStream) {
-            $events[] = new Http2StreamEndedEvent($streamId);
-        }
+        $state = $this->recordHeadersFrame($streamId, $headerBlock, $decodedHeaders, $endStream);
 
-        return $events;
+        return $this->streamEventFactory->eventsForHeadersFrame(
+            $streamId,
+            $headerBlock,
+            $endStream,
+            $decodedHeaders,
+            $state,
+        );
     }
 
     /**
      * @param list<array{name: string, value: string}>|null $decodedHeaders
      */
-    private function recordHeadersFrame(int $streamId, string $headerBlock, ?array $decodedHeaders, bool $endStream): void
+    private function recordHeadersFrame(int $streamId, string $headerBlock, ?array $decodedHeaders, bool $endStream): Http2StreamState
     {
         $state = $this->getOrCreateStreamState($streamId);
         $state->headersReceived = true;
         $state->headerBlock = $headerBlock;
         $state->headers = $decodedHeaders;
         $state->openRemote($endStream);
+
+        return $state;
     }
 
-    private function recordDataFrame(int $streamId, bool $endStream): void
+    private function recordDataFrame(int $streamId, bool $endStream): Http2StreamState
     {
         $state = $this->getOrCreateStreamState($streamId);
         if (!$state->headersReceived || !$state->canReceiveData()) {
@@ -356,6 +351,8 @@ final class Http2Connection
         if ($endStream) {
             $state->markRemoteClosed();
         }
+
+        return $state;
     }
 
     private function handleProtocolFailure(Http2Frame $frame, Http2ProtocolException $e): Http2ProtocolErrorEvent
@@ -442,17 +439,14 @@ final class Http2Connection
     public function processDataFrame(Http2Frame $frame): array
     {
         $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
-        $this->recordDataFrame($frame->streamId, $endStream);
+        $state = $this->recordDataFrame($frame->streamId, $endStream);
 
-        $events = [new Http2DataReceivedEvent($frame->streamId, $frame->payload, $endStream)];
-        foreach ($this->completionEventsForStream($frame->streamId) as $event) {
-            $events[] = $event;
-        }
-        if ($endStream) {
-            $events[] = new Http2StreamEndedEvent($frame->streamId);
-        }
-
-        return $events;
+        return $this->streamEventFactory->eventsForDataFrame(
+            $frame->streamId,
+            $frame->payload,
+            $endStream,
+            $state,
+        );
     }
 
     /**
