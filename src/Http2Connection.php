@@ -25,7 +25,10 @@ final class Http2Connection
     private string $continuationHeaderBlock = '';
     private bool $continuationEndStream = false;
 
-    private function __construct(private readonly string $role)
+    private function __construct(
+        private readonly string $role,
+        private readonly ?HpackHeaderDecoder $headerDecoder = null,
+    ) 
     {
         $this->decoder = new Http2IncrementalFrameDecoder();
         $this->outboundBuffer = new Http2OutboundBuffer();
@@ -34,12 +37,12 @@ final class Http2Connection
 
     public static function client(): self
     {
-        return new self(self::ROLE_CLIENT);
+        return new self(self::ROLE_CLIENT, new HpackHeaderDecoder());
     }
 
     public static function server(): self
     {
-        return new self(self::ROLE_SERVER);
+        return new self(self::ROLE_SERVER, new HpackHeaderDecoder());
     }
 
     public function initiateConnection(): void
@@ -252,7 +255,16 @@ final class Http2Connection
      */
     private function buildCompletedHeadersEvents(int $streamId, string $headerBlock, bool $endStream): array
     {
-        $events = [new Http2HeadersReceivedEvent($streamId, $headerBlock, $endStream)];
+        $decodedHeaders = null;
+        if ($this->headerDecoder !== null) {
+            try {
+                $decodedHeaders = $this->headerDecoder->decode($headerBlock);
+            } catch (Throwable) {
+                $decodedHeaders = null;
+            }
+        }
+
+        $events = [new Http2HeadersReceivedEvent($streamId, $headerBlock, $endStream, $decodedHeaders)];
         if ($endStream) {
             $events[] = new Http2StreamEndedEvent($streamId);
         }

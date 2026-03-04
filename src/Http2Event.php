@@ -22,6 +22,7 @@ final class Http2HeadersReceivedEvent implements Http2Event
         public readonly int $streamId,
         public readonly string $headerBlock,
         public readonly bool $endStream,
+        public readonly ?array $headers = null,
     ) {
     }
 }

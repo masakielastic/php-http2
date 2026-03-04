@@ -11,6 +11,7 @@ require_once __DIR__ . '/H2cSocketConnector.php';
 require_once __DIR__ . '/StreamServerSupport.php';
 require_once __DIR__ . '/Http2Frame.php';
 require_once __DIR__ . '/Http2FrameCodec.php';
+require_once __DIR__ . '/HpackHeaderDecoder.php';
 require_once __DIR__ . '/Http2OutboundBuffer.php';
 require_once __DIR__ . '/Http2BufferedFrameWriter.php';
 require_once __DIR__ . '/Http2IncrementalFrameDecoder.php';
