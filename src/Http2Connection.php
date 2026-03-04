@@ -82,61 +82,9 @@ final class Http2Connection
         while (($frame = $this->decoder->nextFrame()) !== null) {
             $events[] = new Http2FrameReceivedEvent($frame);
             try {
-                if ($this->goAwayReceived && $frame->type !== self::FRAME_TYPE_GOAWAY) {
-                    throw new Http2ProtocolException('received frame after GOAWAY', self::ERROR_PROTOCOL_ERROR, $frame->streamId ?: null, true);
-                }
-
-                if ($this->continuationStreamId !== null && $frame->type !== self::FRAME_TYPE_CONTINUATION) {
-                    throw new Http2ProtocolException('expected CONTINUATION frame', self::ERROR_PROTOCOL_ERROR, $frame->streamId ?: $this->continuationStreamId, true);
-                }
-
-                switch ($frame->type) {
-                    case self::FRAME_TYPE_SETTINGS:
-                        foreach ($this->handleSettingsFrame($frame) as $event) {
-                            $events[] = $event;
-                        }
-                        break;
-
-                    case self::FRAME_TYPE_RST_STREAM:
-                        foreach ($this->handleRstStreamFrame($frame) as $event) {
-                            $events[] = $event;
-                        }
-                        break;
-
-                    case self::FRAME_TYPE_PING:
-                        $this->handlePingFrame($frame);
-                        break;
-
-                    case self::FRAME_TYPE_HEADERS:
-                        foreach ($this->handleHeadersFrame($frame) as $event) {
-                            $events[] = $event;
-                        }
-                        break;
-
-                    case self::FRAME_TYPE_CONTINUATION:
-                        foreach ($this->handleContinuationFrame($frame) as $event) {
-                            $events[] = $event;
-                        }
-                        break;
-
-                    case self::FRAME_TYPE_DATA:
-                        $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
-                        $this->recordDataFrame($frame->streamId, $endStream);
-                        $events[] = new Http2DataReceivedEvent($frame->streamId, $frame->payload, $endStream);
-                        foreach ($this->emitRequestReceivedIfComplete($frame->streamId) as $event) {
-                            $events[] = $event;
-                        }
-                        foreach ($this->emitResponseReceivedIfComplete($frame->streamId) as $event) {
-                            $events[] = $event;
-                        }
-                        if ($endStream) {
-                            $events[] = new Http2StreamEndedEvent($frame->streamId);
-                        }
-                        break;
-
-                    case self::FRAME_TYPE_GOAWAY:
-                        $events[] = $this->handleGoAwayFrame($frame);
-                        break;
+                $this->validateIncomingFrame($frame);
+                foreach ($this->processIncomingFrame($frame) as $event) {
+                    $events[] = $event;
                 }
             } catch (Http2ProtocolException $e) {
                 $error = $this->handleProtocolFailure($frame, $e);
@@ -145,6 +93,85 @@ final class Http2Connection
                     break;
                 }
             }
+        }
+
+        return $events;
+    }
+
+    private function validateIncomingFrame(Http2Frame $frame): void
+    {
+        if ($this->goAwayReceived && $frame->type !== self::FRAME_TYPE_GOAWAY) {
+            throw new Http2ProtocolException('received frame after GOAWAY', self::ERROR_PROTOCOL_ERROR, $frame->streamId ?: null, true);
+        }
+
+        if ($this->continuationStreamId !== null && $frame->type !== self::FRAME_TYPE_CONTINUATION) {
+            throw new Http2ProtocolException('expected CONTINUATION frame', self::ERROR_PROTOCOL_ERROR, $frame->streamId ?: $this->continuationStreamId, true);
+        }
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    private function processIncomingFrame(Http2Frame $frame): array
+    {
+        return match ($frame->type) {
+            self::FRAME_TYPE_SETTINGS => $this->handleSettingsFrame($frame),
+            self::FRAME_TYPE_RST_STREAM => $this->handleRstStreamFrame($frame),
+            self::FRAME_TYPE_PING => $this->handlePingFrameWithEvents($frame),
+            self::FRAME_TYPE_HEADERS => $this->handleHeadersFrame($frame),
+            self::FRAME_TYPE_CONTINUATION => $this->handleContinuationFrame($frame),
+            self::FRAME_TYPE_DATA => $this->handleDataFrame($frame),
+            self::FRAME_TYPE_GOAWAY => [$this->handleGoAwayFrame($frame)],
+            default => [],
+        };
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    private function handlePingFrameWithEvents(Http2Frame $frame): array
+    {
+        $this->handlePingFrame($frame);
+
+        return [];
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    private function handleDataFrame(Http2Frame $frame): array
+    {
+        $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
+        $this->recordDataFrame($frame->streamId, $endStream);
+
+        $events = [
+            new Http2DataReceivedEvent($frame->streamId, $frame->payload, $endStream),
+        ];
+
+        foreach ($this->completionEventsForStream($frame->streamId) as $event) {
+            $events[] = $event;
+        }
+
+        if ($endStream) {
+            $events[] = new Http2StreamEndedEvent($frame->streamId);
+        }
+
+        return $events;
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    private function completionEventsForStream(int $streamId): array
+    {
+        $events = [];
+
+        foreach ($this->emitRequestReceivedIfComplete($streamId) as $event) {
+            $events[] = $event;
+        }
+
+        foreach ($this->emitResponseReceivedIfComplete($streamId) as $event) {
+            $events[] = $event;
         }
 
         return $events;
@@ -372,10 +399,7 @@ final class Http2Connection
 
         $this->recordHeadersFrame($streamId, $headerBlock, $decodedHeaders, $endStream);
         $events = [new Http2HeadersReceivedEvent($streamId, $headerBlock, $endStream, $decodedHeaders)];
-        foreach ($this->emitRequestReceivedIfComplete($streamId) as $event) {
-            $events[] = $event;
-        }
-        foreach ($this->emitResponseReceivedIfComplete($streamId) as $event) {
+        foreach ($this->completionEventsForStream($streamId) as $event) {
             $events[] = $event;
         }
         if ($endStream) {
