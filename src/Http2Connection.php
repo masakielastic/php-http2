@@ -129,7 +129,7 @@ final class Http2Connection
         }
 
         $state = $this->getOrCreateStreamState($streamId);
-        $state->openLocal($endStream);
+        $state->transitionOnLocalHeaders($endStream);
 
         $this->frameSender->sendHeaders($streamId, $headerBlock, $endStream);
     }
@@ -142,7 +142,7 @@ final class Http2Connection
         }
 
         if ($endStream) {
-            $state->markLocalClosed();
+            $state->transitionOnLocalEndStream();
         }
 
         $this->frameSender->sendData($streamId, $payload, $endStream);
@@ -336,7 +336,7 @@ final class Http2Connection
         $state->headersReceived = true;
         $state->headerBlock = $headerBlock;
         $state->headers = $decodedHeaders;
-        $state->openRemote($endStream);
+        $state->transitionOnRemoteHeaders($endStream);
 
         return $state;
     }
@@ -349,7 +349,7 @@ final class Http2Connection
         }
 
         if ($endStream) {
-            $state->markRemoteClosed();
+            $state->transitionOnRemoteEndStream();
         }
 
         return $state;

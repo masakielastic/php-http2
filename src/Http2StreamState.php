@@ -17,7 +17,7 @@ final class Http2StreamState
     public ?string $headerBlock = null;
     public ?array $headers = null;
 
-    public function openLocal(bool $endStream): void
+    public function transitionOnLocalHeaders(bool $endStream): void
     {
         if (!$this->allowsLocalHeaders()) {
             throw new Http2ProtocolException('HEADERS not allowed in current local stream state', 0x05, null, false);
@@ -31,11 +31,11 @@ final class Http2StreamState
         }
 
         if ($endStream) {
-            $this->markLocalClosed();
+            $this->transitionOnLocalEndStream();
         }
     }
 
-    public function openRemote(bool $endStream): void
+    public function transitionOnRemoteHeaders(bool $endStream): void
     {
         if (!$this->allowsRemoteHeaders()) {
             throw new Http2ProtocolException('HEADERS not allowed in current remote stream state', 0x05, null, false);
@@ -47,11 +47,11 @@ final class Http2StreamState
         }
 
         if ($endStream) {
-            $this->markRemoteClosed();
+            $this->transitionOnRemoteEndStream();
         }
     }
 
-    public function markLocalClosed(): void
+    public function transitionOnLocalEndStream(): void
     {
         $this->state = match ($this->state) {
             self::STATE_IDLE => self::STATE_HALF_CLOSED_LOCAL,
@@ -62,7 +62,7 @@ final class Http2StreamState
         };
     }
 
-    public function markRemoteClosed(): void
+    public function transitionOnRemoteEndStream(): void
     {
         $this->state = match ($this->state) {
             self::STATE_IDLE => self::STATE_HALF_CLOSED_REMOTE,
