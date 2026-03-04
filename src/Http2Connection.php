@@ -16,13 +16,12 @@ final class Http2Connection
     private const CLIENT_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
     private const ERROR_NO_ERROR = 0x00;
     private const ERROR_PROTOCOL_ERROR = 0x01;
-    private const ERROR_STREAM_CLOSED = 0x05;
-    private const FLAG_END_STREAM = 0x01;
 
     private readonly Http2IncrementalFrameDecoder $decoder;
     private readonly Http2OutboundBuffer $outboundBuffer;
     private readonly Http2BufferedFrameWriter $frameWriter;
     private readonly Http2FrameSender $frameSender;
+    private readonly Http2LocalFrameStateUpdater $localFrameStateUpdater;
     private readonly Http2ControlFrameHandler $controlFrameHandler;
     private readonly Http2HeaderFrameHandler $headerFrameHandler;
     private readonly Http2DataFrameHandler $dataFrameHandler;
@@ -45,6 +44,9 @@ final class Http2Connection
         $this->outboundBuffer = new Http2OutboundBuffer();
         $this->frameWriter = new Http2BufferedFrameWriter($this->outboundBuffer);
         $this->frameSender = new Http2FrameSender($this->frameWriter);
+        $this->localFrameStateUpdater = new Http2LocalFrameStateUpdater(
+            fn (int $streamId): Http2StreamState => $this->getOrCreateStreamState($streamId),
+        );
         $this->controlFrameHandler = new Http2ControlFrameHandler(
             $this->frameSender,
             fn (int $streamId): Http2StreamState => $this->getOrCreateStreamState($streamId),
@@ -142,23 +144,13 @@ final class Http2Connection
             throw new Http2ProtocolException('cannot open new stream after GOAWAY', self::ERROR_PROTOCOL_ERROR, $streamId, true);
         }
 
-        $state = $this->getOrCreateStreamState($streamId);
-        $state->transitionOnLocalHeaders($endStream);
-
+        $this->localFrameStateUpdater->applyLocalHeadersFrame($streamId, $endStream);
         $this->frameSender->sendHeaders($streamId, $headerBlock, $endStream);
     }
 
     public function sendData(int $streamId, string $payload, bool $endStream = false): void
     {
-        $state = $this->getOrCreateStreamState($streamId);
-        if (!$state->allowsLocalData()) {
-            throw new Http2ProtocolException('DATA not allowed in current local stream state', self::ERROR_STREAM_CLOSED, $streamId, false);
-        }
-
-        if ($endStream) {
-            $state->transitionOnLocalEndStream();
-        }
-
+        $this->localFrameStateUpdater->applyLocalDataFrame($streamId, $endStream);
         $this->frameSender->sendData($streamId, $payload, $endStream);
     }
 
