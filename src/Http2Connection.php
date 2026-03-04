@@ -266,7 +266,7 @@ final class Http2Connection
 
         $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
         if (($frame->flags & self::FLAG_END_HEADERS) !== 0) {
-            return $this->buildCompletedHeadersEvents($frame->streamId, $frame->payload, $endStream);
+            return $this->completeHeadersBlock($frame->streamId, $frame->payload, $endStream);
         }
 
         if ($this->continuationBuffer->expectsContinuation()) {
@@ -293,7 +293,7 @@ final class Http2Connection
         }
 
         $continuation = $this->continuationBuffer->release();
-        $events = $this->buildCompletedHeadersEvents(
+        $events = $this->completeHeadersBlock(
             $continuation['streamId'],
             $continuation['headerBlock'],
             $continuation['endStream'],
@@ -305,7 +305,7 @@ final class Http2Connection
     /**
      * @return list<Http2Event>
      */
-    private function buildCompletedHeadersEvents(int $streamId, string $headerBlock, bool $endStream): array
+    private function completeHeadersBlock(int $streamId, string $headerBlock, bool $endStream): array
     {
         $decodedHeaders = $this->decodeHeadersBlock($headerBlock);
 
