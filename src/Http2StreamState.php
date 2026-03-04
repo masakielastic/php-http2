@@ -20,7 +20,7 @@ final class Http2StreamState
     public function openLocal(bool $endStream): void
     {
         if (!$this->canSendHeaders()) {
-            throw new RuntimeException('HEADERS not allowed in current local stream state');
+            throw new Http2ProtocolException('HEADERS not allowed in current local stream state', 0x05, null, false);
         }
 
         $this->locallyInitiated = true;
@@ -38,7 +38,7 @@ final class Http2StreamState
     public function openRemote(bool $endStream): void
     {
         if (!$this->canReceiveHeaders()) {
-            throw new RuntimeException('HEADERS not allowed in current remote stream state');
+            throw new Http2ProtocolException('HEADERS not allowed in current remote stream state', 0x05, null, false);
         }
 
         if ($this->state === self::STATE_IDLE) {
@@ -58,7 +58,7 @@ final class Http2StreamState
             self::STATE_OPEN => self::STATE_HALF_CLOSED_LOCAL,
             self::STATE_HALF_CLOSED_REMOTE => self::STATE_CLOSED,
             self::STATE_HALF_CLOSED_LOCAL, self::STATE_CLOSED => $this->state,
-            default => throw new RuntimeException('invalid local stream transition'),
+            default => throw new Http2ProtocolException('invalid local stream transition', 0x05, null, false),
         };
     }
 
@@ -69,7 +69,7 @@ final class Http2StreamState
             self::STATE_OPEN => self::STATE_HALF_CLOSED_REMOTE,
             self::STATE_HALF_CLOSED_LOCAL => self::STATE_CLOSED,
             self::STATE_HALF_CLOSED_REMOTE, self::STATE_CLOSED => $this->state,
-            default => throw new RuntimeException('invalid remote stream transition'),
+            default => throw new Http2ProtocolException('invalid remote stream transition', 0x05, null, false),
         };
     }
 

@@ -83,11 +83,11 @@ final class Http2Connection
             $events[] = new Http2FrameReceivedEvent($frame);
             try {
                 if ($this->goAwayReceived && $frame->type !== self::FRAME_TYPE_GOAWAY) {
-                    throw new RuntimeException('received frame after GOAWAY');
+                    throw new Http2ProtocolException('received frame after GOAWAY', self::ERROR_PROTOCOL_ERROR, $frame->streamId ?: null, true);
                 }
 
                 if ($this->continuationStreamId !== null && $frame->type !== self::FRAME_TYPE_CONTINUATION) {
-                    throw new RuntimeException('expected CONTINUATION frame');
+                    throw new Http2ProtocolException('expected CONTINUATION frame', self::ERROR_PROTOCOL_ERROR, $frame->streamId ?: $this->continuationStreamId, true);
                 }
 
                 switch ($frame->type) {
@@ -138,7 +138,7 @@ final class Http2Connection
                         $events[] = $this->handleGoAwayFrame($frame);
                         break;
                 }
-            } catch (RuntimeException $e) {
+            } catch (Http2ProtocolException $e) {
                 $error = $this->handleProtocolFailure($frame, $e);
                 $events[] = $error;
                 if ($error->connectionError) {
@@ -153,7 +153,7 @@ final class Http2Connection
     public function sendHeaders(int $streamId, string $headerBlock, bool $endStream = false): void
     {
         if ($this->goAwayReceived || $this->goAwaySent) {
-            throw new RuntimeException('cannot open new stream after GOAWAY');
+            throw new Http2ProtocolException('cannot open new stream after GOAWAY', self::ERROR_PROTOCOL_ERROR, $streamId, true);
         }
 
         $state = $this->getOrCreateStreamState($streamId);
@@ -171,7 +171,7 @@ final class Http2Connection
     {
         $state = $this->getOrCreateStreamState($streamId);
         if (!$state->canSendData()) {
-            throw new RuntimeException('DATA not allowed in current local stream state');
+            throw new Http2ProtocolException('DATA not allowed in current local stream state', self::ERROR_STREAM_CLOSED, $streamId, false);
         }
 
         if ($endStream) {
@@ -185,7 +185,7 @@ final class Http2Connection
     public function resetStream(int $streamId, int $errorCode = 0): void
     {
         if ($streamId === 0) {
-            throw new RuntimeException('RST_STREAM on stream 0 is invalid');
+            throw new Http2ProtocolException('RST_STREAM on stream 0 is invalid', self::ERROR_PROTOCOL_ERROR, null, true);
         }
 
         $this->getOrCreateStreamState($streamId)->close();
@@ -241,7 +241,7 @@ final class Http2Connection
     {
         if (($frame->flags & self::FLAG_ACK) !== 0) {
             if ($frame->length !== 0) {
-                throw new RuntimeException('SETTINGS ACK must have empty payload');
+                throw new Http2ProtocolException('SETTINGS ACK must have empty payload', self::ERROR_FRAME_SIZE_ERROR, null, true);
             }
 
             return [];
@@ -271,11 +271,11 @@ final class Http2Connection
     private function handleRstStreamFrame(Http2Frame $frame): array
     {
         if ($frame->streamId === 0) {
-            throw new RuntimeException('RST_STREAM on stream 0 is invalid');
+            throw new Http2ProtocolException('RST_STREAM on stream 0 is invalid', self::ERROR_PROTOCOL_ERROR, null, true);
         }
 
         if ($frame->length !== 4) {
-            throw new RuntimeException('RST_STREAM must have a 4-byte error code');
+            throw new Http2ProtocolException('RST_STREAM must have a 4-byte error code', self::ERROR_FRAME_SIZE_ERROR, $frame->streamId, true);
         }
 
         $errorCode = unpack('Ncode', $frame->payload)['code'];
@@ -287,11 +287,11 @@ final class Http2Connection
     private function handleGoAwayFrame(Http2Frame $frame): Http2GoAwayReceivedEvent
     {
         if ($frame->streamId !== 0) {
-            throw new RuntimeException('GOAWAY must be sent on stream 0');
+            throw new Http2ProtocolException('GOAWAY must be sent on stream 0', self::ERROR_PROTOCOL_ERROR, null, true);
         }
 
         if ($frame->length < 8) {
-            throw new RuntimeException('GOAWAY must include last stream id and error code');
+            throw new Http2ProtocolException('GOAWAY must include last stream id and error code', self::ERROR_FRAME_SIZE_ERROR, null, true);
         }
 
         $parts = unpack('Nlast_stream_id/Nerror_code', substr($frame->payload, 0, 8));
@@ -310,7 +310,7 @@ final class Http2Connection
     private function handleHeadersFrame(Http2Frame $frame): array
     {
         if ($frame->streamId === 0) {
-            throw new RuntimeException('HEADERS on stream 0 is invalid');
+            throw new Http2ProtocolException('HEADERS on stream 0 is invalid', self::ERROR_PROTOCOL_ERROR, null, true);
         }
 
         $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
@@ -319,7 +319,7 @@ final class Http2Connection
         }
 
         if ($this->continuationStreamId !== null) {
-            throw new RuntimeException('invalid CONTINUATION sequence');
+            throw new Http2ProtocolException('invalid CONTINUATION sequence', self::ERROR_PROTOCOL_ERROR, $frame->streamId, true);
         }
 
         $this->continuationStreamId = $frame->streamId;
@@ -335,7 +335,7 @@ final class Http2Connection
     private function handleContinuationFrame(Http2Frame $frame): array
     {
         if ($this->continuationStreamId === null || $frame->streamId !== $this->continuationStreamId) {
-            throw new RuntimeException('invalid CONTINUATION sequence');
+            throw new Http2ProtocolException('invalid CONTINUATION sequence', self::ERROR_PROTOCOL_ERROR, $frame->streamId, true);
         }
 
         $this->continuationHeaderBlock .= $frame->payload;
@@ -401,7 +401,7 @@ final class Http2Connection
     {
         $state = $this->getOrCreateStreamState($streamId);
         if (!$state->headersReceived || !$state->canReceiveData()) {
-            throw new RuntimeException('DATA not allowed in current remote stream state');
+            throw new Http2ProtocolException('DATA not allowed in current remote stream state', self::ERROR_STREAM_CLOSED, $streamId, false);
         }
 
         if ($endStream) {
@@ -459,65 +459,14 @@ final class Http2Connection
         ];
     }
 
-    private function handleProtocolFailure(Http2Frame $frame, RuntimeException $e): Http2ProtocolErrorEvent
+    private function handleProtocolFailure(Http2Frame $frame, Http2ProtocolException $e): Http2ProtocolErrorEvent
     {
-        $errorCode = $this->classifyErrorCode($e->getMessage());
-        if ($this->isStreamError($frame, $e)) {
-            return $this->failStream($frame->streamId, $e->getMessage(), $errorCode);
+        $streamId = $e->streamId ?? ($frame->streamId !== 0 ? $frame->streamId : null);
+        if (!$e->connectionError && $streamId !== null) {
+            return $this->failStream($streamId, $e->getMessage(), $e->errorCode);
         }
 
-        return $this->failConnection($e->getMessage(), $errorCode, $frame->streamId);
-    }
-
-    private function isStreamError(Http2Frame $frame, RuntimeException $e): bool
-    {
-        if ($frame->streamId === 0) {
-            return false;
-        }
-
-        $message = $e->getMessage();
-        foreach ([
-            'HEADERS not allowed in current remote stream state',
-            'DATA not allowed in current remote stream state',
-            'HEADERS not allowed in current local stream state',
-            'DATA not allowed in current local stream state',
-            'invalid local stream transition',
-            'invalid remote stream transition',
-        ] as $pattern) {
-            if ($message === $pattern) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function classifyErrorCode(string $message): int
-    {
-        foreach ([
-            'SETTINGS ACK must have empty payload',
-            'RST_STREAM must have a 4-byte error code',
-            'GOAWAY must include last stream id and error code',
-        ] as $frameSizeMessage) {
-            if ($message === $frameSizeMessage) {
-                return self::ERROR_FRAME_SIZE_ERROR;
-            }
-        }
-
-        foreach ([
-            'HEADERS not allowed in current remote stream state',
-            'DATA not allowed in current remote stream state',
-            'HEADERS not allowed in current local stream state',
-            'DATA not allowed in current local stream state',
-            'invalid local stream transition',
-            'invalid remote stream transition',
-        ] as $streamClosedMessage) {
-            if ($message === $streamClosedMessage) {
-                return self::ERROR_STREAM_CLOSED;
-            }
-        }
-
-        return self::ERROR_PROTOCOL_ERROR;
+        return $this->failConnection($e->getMessage(), $e->errorCode, $streamId);
     }
 
     private function failStream(int $streamId, string $message, int $errorCode): Http2ProtocolErrorEvent
