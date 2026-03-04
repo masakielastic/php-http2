@@ -122,7 +122,7 @@ final class Http2ClientConnection
     ): int
     {
         $requestSent = false;
-        $responseDone = false;
+        $responseComplete = false;
         $frameIndex = 0;
 
         while ($frameIndex < self::MAX_FRAMES) {
@@ -149,9 +149,9 @@ final class Http2ClientConnection
                     continue;
                 }
 
-                if ($event instanceof Http2StreamEndedEvent && $event->streamId === self::REQUEST_STREAM_ID) {
+                if ($event instanceof Http2ResponseReceivedEvent && $event->streamId === self::REQUEST_STREAM_ID) {
                     $this->logger->log('END_STREAM received on response stream; exiting.');
-                    $responseDone = true;
+                    $responseComplete = true;
                     break 2;
                 }
 
@@ -167,7 +167,7 @@ final class Http2ClientConnection
         if ($frameIndex >= self::MAX_FRAMES) {
             $this->logger->log('[!] frame limit reached');
         }
-        $this->logger->log($responseDone ? 'done' : 'done (response may be incomplete)');
+        $this->logger->log($responseComplete ? 'done' : 'done (response may be incomplete)');
 
         return 0;
     }

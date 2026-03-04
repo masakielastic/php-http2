@@ -29,7 +29,6 @@ final class Http2ServerConnection
     private function handleConnection(Http2Transport $transport): void
     {
         $protocol = new Http2ServerProtocol();
-        $requests = [];
         $responseSent = false;
         $frameIndex = 0;
 
@@ -63,51 +62,18 @@ final class Http2ServerConnection
                     continue;
                 }
 
-                if ($event instanceof Http2HeadersReceivedEvent) {
-                    $requests[$event->streamId]['headersDone'] = true;
-                    $requests[$event->streamId]['ended'] = $event->endStream;
-                    continue;
-                }
-
-                if ($event instanceof Http2DataReceivedEvent) {
-                    if (!isset($requests[$event->streamId])) {
-                        throw new RuntimeException('DATA received on unexpected stream');
-                    }
-
-                    if ($event->endStream) {
-                        $requests[$event->streamId]['ended'] = true;
-                    }
-                    continue;
-                }
-
-                if ($event instanceof Http2StreamEndedEvent) {
-                    if (!isset($requests[$event->streamId])) {
-                        $requests[$event->streamId] = ['headersDone' => false, 'ended' => true, 'responseSent' => false];
-                    } else {
-                        $requests[$event->streamId]['ended'] = true;
-                    }
-                    continue;
-                }
-
                 if ($event instanceof Http2GoAwayReceivedEvent) {
                     $this->logger->log('GOAWAY received');
                     return;
                 }
-            }
 
-            foreach ($requests as $streamId => $state) {
-                $headersDone = !empty($state['headersDone']);
-                $ended = !empty($state['ended']);
-                $streamResponseSent = !empty($state['responseSent']);
-                if (!$headersDone || !$ended || $streamResponseSent) {
+                if ($event instanceof Http2RequestReceivedEvent) {
+                    $this->logger->log(sprintf('>>> sending HEADERS on stream %d', $event->streamId));
+                    $this->logger->log(sprintf('>>> sending DATA on stream %d', $event->streamId));
+                    $protocol->sendResponse($event->streamId, $this->buildResponseHeaders(), 'Hello World');
+                    $responseSent = true;
                     continue;
                 }
-
-                $this->logger->log(sprintf('>>> sending HEADERS on stream %d', $streamId));
-                $this->logger->log(sprintf('>>> sending DATA on stream %d', $streamId));
-                $protocol->sendResponse($streamId, $this->buildResponseHeaders(), 'Hello World');
-                $requests[$streamId]['responseSent'] = true;
-                $responseSent = true;
             }
 
             $this->flushOutbound($transport, $protocol);

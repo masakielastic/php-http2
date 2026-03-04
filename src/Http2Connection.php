@@ -19,6 +19,8 @@ final class Http2Connection
     private readonly Http2IncrementalFrameDecoder $decoder;
     private readonly Http2OutboundBuffer $outboundBuffer;
     private readonly Http2BufferedFrameWriter $frameWriter;
+    /** @var array<int, Http2StreamState> */
+    private array $streams = [];
     private string $prefaceBuffer = '';
     private bool $prefaceReceived = false;
     private ?int $continuationStreamId = null;
@@ -102,7 +104,14 @@ final class Http2Connection
 
                 case self::FRAME_TYPE_DATA:
                     $endStream = ($frame->flags & self::FLAG_END_STREAM) !== 0;
+                    $this->recordDataFrame($frame->streamId, $endStream);
                     $events[] = new Http2DataReceivedEvent($frame->streamId, $frame->payload, $endStream);
+                    foreach ($this->emitRequestReceivedIfComplete($frame->streamId) as $event) {
+                        $events[] = $event;
+                    }
+                    foreach ($this->emitResponseReceivedIfComplete($frame->streamId) as $event) {
+                        $events[] = $event;
+                    }
                     if ($endStream) {
                         $events[] = new Http2StreamEndedEvent($frame->streamId);
                     }
@@ -119,6 +128,9 @@ final class Http2Connection
 
     public function sendHeaders(int $streamId, string $headerBlock, bool $endStream = false): void
     {
+        $state = $this->getOrCreateStreamState($streamId);
+        $state->locallyInitiated = true;
+
         $flags = self::FLAG_END_HEADERS;
         if ($endStream) {
             $flags |= self::FLAG_END_STREAM;
@@ -264,11 +276,103 @@ final class Http2Connection
             }
         }
 
+        $this->recordHeadersFrame($streamId, $headerBlock, $decodedHeaders, $endStream);
         $events = [new Http2HeadersReceivedEvent($streamId, $headerBlock, $endStream, $decodedHeaders)];
+        foreach ($this->emitRequestReceivedIfComplete($streamId) as $event) {
+            $events[] = $event;
+        }
+        foreach ($this->emitResponseReceivedIfComplete($streamId) as $event) {
+            $events[] = $event;
+        }
         if ($endStream) {
             $events[] = new Http2StreamEndedEvent($streamId);
         }
 
         return $events;
+    }
+
+    /**
+     * @param list<array{name: string, value: string}>|null $decodedHeaders
+     */
+    private function recordHeadersFrame(int $streamId, string $headerBlock, ?array $decodedHeaders, bool $endStream): void
+    {
+        $state = $this->getOrCreateStreamState($streamId);
+        $state->headersReceived = true;
+        $state->headerBlock = $headerBlock;
+        $state->headers = $decodedHeaders;
+        if ($endStream) {
+            $state->endStreamReceived = true;
+        }
+    }
+
+    private function recordDataFrame(int $streamId, bool $endStream): void
+    {
+        $state = $this->getOrCreateStreamState($streamId);
+        if (!$state->headersReceived) {
+            throw new RuntimeException('DATA received before request headers');
+        }
+
+        if ($endStream) {
+            $state->endStreamReceived = true;
+        }
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    private function emitRequestReceivedIfComplete(int $streamId): array
+    {
+        if ($this->role !== self::ROLE_SERVER) {
+            return [];
+        }
+
+        $state = $this->getOrCreateStreamState($streamId);
+        if (!$state->headersReceived || !$state->endStreamReceived || $state->requestEmitted) {
+            return [];
+        }
+
+        $state->requestEmitted = true;
+
+        return [
+            new Http2RequestReceivedEvent(
+                $streamId,
+                $state->headerBlock ?? '',
+                $state->headers,
+            ),
+        ];
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    private function emitResponseReceivedIfComplete(int $streamId): array
+    {
+        if ($this->role !== self::ROLE_CLIENT) {
+            return [];
+        }
+
+        $state = $this->getOrCreateStreamState($streamId);
+        if (!$state->locallyInitiated || !$state->headersReceived || !$state->endStreamReceived || $state->responseEmitted) {
+            return [];
+        }
+
+        $state->responseEmitted = true;
+
+        return [
+            new Http2ResponseReceivedEvent(
+                $streamId,
+                $state->headerBlock ?? '',
+                $state->headers,
+            ),
+        ];
+    }
+
+    private function getOrCreateStreamState(int $streamId): Http2StreamState
+    {
+        if (!isset($this->streams[$streamId])) {
+            $this->streams[$streamId] = new Http2StreamState();
+        }
+
+        return $this->streams[$streamId];
     }
 }
