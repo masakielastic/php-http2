@@ -3,6 +3,15 @@ declare(strict_types=1);
 
 final class Http2ClientConnection
 {
+    private const H2_ERROR_NO_ERROR = 0x00;
+    private const H2_ERROR_PROTOCOL_ERROR = 0x01;
+    private const H2_ERROR_INTERNAL_ERROR = 0x02;
+    private const H2_ERROR_FLOW_CONTROL_ERROR = 0x03;
+    private const H2_ERROR_SETTINGS_TIMEOUT = 0x04;
+    private const H2_ERROR_STREAM_CLOSED = 0x05;
+    private const H2_ERROR_FRAME_SIZE_ERROR = 0x06;
+    private const H2_ERROR_REFUSED_STREAM = 0x07;
+    private const H2_ERROR_CANCEL = 0x08;
     private const EXIT_OK = 0;
     private const EXIT_CONNECT_FAILED = 1;
     private const EXIT_ALPN_MISMATCH = 2;
@@ -170,7 +179,8 @@ final class Http2ClientConnection
                         $event->streamId !== null ? sprintf(', stream=%d', $event->streamId) : ''
                     ));
                     if ($event->connectionError) {
-                        $exitCode = self::EXIT_PROTOCOL_ERROR;
+                        $exitCode = $this->exitCodeForProtocolError($event);
+                        $this->logRetryGuidanceForProtocolError($event, $host, $path);
                         $this->flushOutbound($transport, $protocol);
                         break 2;
                     }
@@ -179,6 +189,7 @@ final class Http2ClientConnection
 
                 if ($event instanceof Http2StreamResetEvent && $event->streamId === self::REQUEST_STREAM_ID) {
                     $this->logger->log(sprintf('RST_STREAM received on response stream; error_code=%d', $event->errorCode));
+                    $this->logRetryGuidanceForStreamReset($event, $host, $path);
                     $exitCode = self::EXIT_STREAM_RESET;
                     break 2;
                 }
@@ -189,6 +200,7 @@ final class Http2ClientConnection
                         $event->lastStreamId,
                         $event->errorCode
                     ));
+                    $this->logRetryGuidanceForGoAway($event, $host, $path);
                     $exitCode = self::EXIT_GOAWAY;
                     break 2;
                 }
@@ -204,6 +216,68 @@ final class Http2ClientConnection
         $this->logger->log($responseComplete ? 'done' : 'done (response may be incomplete)');
 
         return $responseComplete ? self::EXIT_OK : $exitCode;
+    }
+
+    private function exitCodeForProtocolError(Http2ProtocolErrorEvent $event): int
+    {
+        return match ($event->errorCode) {
+            self::H2_ERROR_PROTOCOL_ERROR,
+            self::H2_ERROR_FRAME_SIZE_ERROR,
+            self::H2_ERROR_FLOW_CONTROL_ERROR,
+            self::H2_ERROR_SETTINGS_TIMEOUT => self::EXIT_PROTOCOL_ERROR,
+            default => self::EXIT_PROTOCOL_ERROR,
+        };
+    }
+
+    private function logRetryGuidanceForProtocolError(Http2ProtocolErrorEvent $event, string $host, string $path): void
+    {
+        if ($event->connectionError) {
+            $this->logger->log(sprintf(
+                'retry: not recommended automatically after connection-level protocol error for %s%s',
+                $host,
+                $path
+            ));
+        }
+    }
+
+    private function logRetryGuidanceForStreamReset(Http2StreamResetEvent $event, string $host, string $path): void
+    {
+        if ($event->errorCode === self::H2_ERROR_REFUSED_STREAM) {
+            $this->logger->log(sprintf(
+                'retry: safe to retry the request on a new connection for %s%s',
+                $host,
+                $path
+            ));
+            return;
+        }
+
+        if ($event->errorCode === self::H2_ERROR_CANCEL) {
+            $this->logger->log(sprintf(
+                'retry: possible, but depends on whether %s%s is idempotent',
+                $host,
+                $path
+            ));
+        }
+    }
+
+    private function logRetryGuidanceForGoAway(Http2GoAwayReceivedEvent $event, string $host, string $path): void
+    {
+        if ($event->lastStreamId < self::REQUEST_STREAM_ID) {
+            $this->logger->log(sprintf(
+                'retry: safe to retry the request on a new connection for %s%s',
+                $host,
+                $path
+            ));
+            return;
+        }
+
+        if ($event->errorCode === self::H2_ERROR_NO_ERROR) {
+            $this->logger->log(sprintf(
+                'retry: likely unnecessary because the request stream was processed for %s%s',
+                $host,
+                $path
+            ));
+        }
     }
 
     private function logFrame(int $index, Http2Frame $frame): void

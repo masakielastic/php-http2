@@ -26,6 +26,9 @@ exit codes:
   3 connection-level HTTP/2 protocol error
   4 stream reset received
   5 GOAWAY received
+
+notes:
+  retry is not automatic; the client logs retry guidance for GOAWAY and RST_STREAM cases
 TXT;
 }
 
