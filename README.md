@@ -1,4 +1,4 @@
-# http2-client
+# PHP HTTP/2 Playground
 
 This repository is for experimenting with a minimal HTTP/2 implementation in PHP.
 
