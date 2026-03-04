@@ -3,6 +3,12 @@ declare(strict_types=1);
 
 final class Http2ClientConnection
 {
+    private const EXIT_OK = 0;
+    private const EXIT_CONNECT_FAILED = 1;
+    private const EXIT_ALPN_MISMATCH = 2;
+    private const EXIT_PROTOCOL_ERROR = 3;
+    private const EXIT_STREAM_RESET = 4;
+    private const EXIT_GOAWAY = 5;
     private const FRAME_TYPE_DATA = 0x00;
     private const REQUEST_STREAM_ID = 1;
     private const MAX_FRAMES = 50;
@@ -32,7 +38,7 @@ final class Http2ClientConnection
             $connection = $this->tlsConnector->connectWithAlpn($host, $port, $options);
         } catch (Throwable $e) {
             $this->logger->log('[!] ' . $e->getMessage());
-            return 1;
+            return self::EXIT_CONNECT_FAILED;
         }
 
         return $this->runWithStream(
@@ -55,7 +61,7 @@ final class Http2ClientConnection
             $transport = $this->h2cConnector->connect($host, $port, $timeoutSec);
         } catch (Throwable $e) {
             $this->logger->log('[!] ' . $e->getMessage());
-            return 1;
+            return self::EXIT_CONNECT_FAILED;
         }
 
         try {
@@ -82,7 +88,7 @@ final class Http2ClientConnection
             if ($closeStream) {
                 $transport->close();
             }
-            return 2;
+            return self::EXIT_ALPN_MISMATCH;
         }
 
         try {
@@ -102,7 +108,7 @@ final class Http2ClientConnection
     ): int {
         if ($negotiatedProtocol !== null && $negotiatedProtocol !== 'h2') {
             $this->logger->log('[!] negotiated ALPN is not h2. Exiting (this demo expects HTTP/2).');
-            return 2;
+            return self::EXIT_ALPN_MISMATCH;
         }
 
         $protocol = new Http2ClientProtocol($this->hpackEncoder);
@@ -124,6 +130,7 @@ final class Http2ClientConnection
         $requestSent = false;
         $responseComplete = false;
         $frameIndex = 0;
+        $exitCode = self::EXIT_OK;
 
         while ($frameIndex < self::MAX_FRAMES) {
             $payload = $transport->readSome(16_384);
@@ -163,6 +170,7 @@ final class Http2ClientConnection
                         $event->streamId !== null ? sprintf(', stream=%d', $event->streamId) : ''
                     ));
                     if ($event->connectionError) {
+                        $exitCode = self::EXIT_PROTOCOL_ERROR;
                         $this->flushOutbound($transport, $protocol);
                         break 2;
                     }
@@ -171,6 +179,7 @@ final class Http2ClientConnection
 
                 if ($event instanceof Http2StreamResetEvent && $event->streamId === self::REQUEST_STREAM_ID) {
                     $this->logger->log(sprintf('RST_STREAM received on response stream; error_code=%d', $event->errorCode));
+                    $exitCode = self::EXIT_STREAM_RESET;
                     break 2;
                 }
 
@@ -180,6 +189,7 @@ final class Http2ClientConnection
                         $event->lastStreamId,
                         $event->errorCode
                     ));
+                    $exitCode = self::EXIT_GOAWAY;
                     break 2;
                 }
             }
@@ -189,10 +199,11 @@ final class Http2ClientConnection
 
         if ($frameIndex >= self::MAX_FRAMES) {
             $this->logger->log('[!] frame limit reached');
+            $exitCode = self::EXIT_PROTOCOL_ERROR;
         }
         $this->logger->log($responseComplete ? 'done' : 'done (response may be incomplete)');
 
-        return 0;
+        return $responseComplete ? self::EXIT_OK : $exitCode;
     }
 
     private function logFrame(int $index, Http2Frame $frame): void

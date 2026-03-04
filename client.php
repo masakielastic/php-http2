@@ -18,6 +18,14 @@ examples:
   php client.php example.com 443 /
   php client.php 127.0.0.1 8080 / --mode=h2c
   php client.php 127.0.0.1 18443 / --mode=tls --insecure --timeout=5 --peer-name=localhost
+
+exit codes:
+  0 success
+  1 connect/setup failure
+  2 negotiated protocol was not h2
+  3 connection-level HTTP/2 protocol error
+  4 stream reset received
+  5 GOAWAY received
 TXT;
 }
 
