@@ -49,7 +49,11 @@ final class Http2StreamEndedEvent implements Http2Event
 
 final class Http2GoAwayReceivedEvent implements Http2Event
 {
-    public function __construct(public readonly Http2Frame $frame)
+    public function __construct(
+        public readonly Http2Frame $frame,
+        public readonly int $lastStreamId,
+        public readonly int $errorCode,
+    )
     {
     }
 }
@@ -80,6 +84,15 @@ final class Http2ResponseReceivedEvent implements Http2Event
         public readonly int $streamId,
         public readonly string $headerBlock,
         public readonly ?array $headers = null,
+    ) {
+    }
+}
+
+final class Http2StreamResetEvent implements Http2Event
+{
+    public function __construct(
+        public readonly int $streamId,
+        public readonly int $errorCode,
     ) {
     }
 }

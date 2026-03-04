@@ -78,6 +78,11 @@ final class Http2StreamState
         return $this->state === self::STATE_HALF_CLOSED_REMOTE || $this->state === self::STATE_CLOSED;
     }
 
+    public function close(): void
+    {
+        $this->state = self::STATE_CLOSED;
+    }
+
     public function canSendHeaders(): bool
     {
         return $this->state === self::STATE_IDLE || $this->state === self::STATE_OPEN || $this->state === self::STATE_HALF_CLOSED_REMOTE;

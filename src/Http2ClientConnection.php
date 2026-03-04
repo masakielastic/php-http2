@@ -155,8 +155,17 @@ final class Http2ClientConnection
                     break 2;
                 }
 
+                if ($event instanceof Http2StreamResetEvent && $event->streamId === self::REQUEST_STREAM_ID) {
+                    $this->logger->log(sprintf('RST_STREAM received on response stream; error_code=%d', $event->errorCode));
+                    break 2;
+                }
+
                 if ($event instanceof Http2GoAwayReceivedEvent) {
-                    $this->logger->log('GOAWAY received; exiting.');
+                    $this->logger->log(sprintf(
+                        'GOAWAY received; last_stream_id=%d error_code=%d',
+                        $event->lastStreamId,
+                        $event->errorCode
+                    ));
                     break 2;
                 }
             }

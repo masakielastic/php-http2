@@ -63,7 +63,20 @@ final class Http2ServerConnection
                 }
 
                 if ($event instanceof Http2GoAwayReceivedEvent) {
-                    $this->logger->log('GOAWAY received');
+                    $this->logger->log(sprintf(
+                        'GOAWAY received; last_stream_id=%d error_code=%d',
+                        $event->lastStreamId,
+                        $event->errorCode
+                    ));
+                    return;
+                }
+
+                if ($event instanceof Http2StreamResetEvent) {
+                    $this->logger->log(sprintf(
+                        'RST_STREAM received on stream %d; error_code=%d',
+                        $event->streamId,
+                        $event->errorCode
+                    ));
                     return;
                 }
 

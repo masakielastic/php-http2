@@ -8,6 +8,7 @@ final class Http2Connection
     private const CLIENT_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
     private const FRAME_TYPE_DATA = 0x00;
     private const FRAME_TYPE_HEADERS = 0x01;
+    private const FRAME_TYPE_RST_STREAM = 0x03;
     private const FRAME_TYPE_SETTINGS = 0x04;
     private const FRAME_TYPE_PING = 0x06;
     private const FRAME_TYPE_GOAWAY = 0x07;
@@ -23,6 +24,8 @@ final class Http2Connection
     private array $streams = [];
     private string $prefaceBuffer = '';
     private bool $prefaceReceived = false;
+    private bool $goAwayReceived = false;
+    private bool $goAwaySent = false;
     private ?int $continuationStreamId = null;
     private string $continuationHeaderBlock = '';
     private bool $continuationEndStream = false;
@@ -73,6 +76,10 @@ final class Http2Connection
         $this->decoder->append($payload);
 
         while (($frame = $this->decoder->nextFrame()) !== null) {
+            if ($this->goAwayReceived && $frame->type !== self::FRAME_TYPE_GOAWAY) {
+                throw new RuntimeException('received frame after GOAWAY');
+            }
+
             if ($this->continuationStreamId !== null && $frame->type !== self::FRAME_TYPE_CONTINUATION) {
                 throw new RuntimeException('expected CONTINUATION frame');
             }
@@ -82,6 +89,12 @@ final class Http2Connection
             switch ($frame->type) {
                 case self::FRAME_TYPE_SETTINGS:
                     foreach ($this->handleSettingsFrame($frame) as $event) {
+                        $events[] = $event;
+                    }
+                    break;
+
+                case self::FRAME_TYPE_RST_STREAM:
+                    foreach ($this->handleRstStreamFrame($frame) as $event) {
                         $events[] = $event;
                     }
                     break;
@@ -118,7 +131,7 @@ final class Http2Connection
                     break;
 
                 case self::FRAME_TYPE_GOAWAY:
-                    $events[] = new Http2GoAwayReceivedEvent($frame);
+                    $events[] = $this->handleGoAwayFrame($frame);
                     break;
             }
         }
@@ -128,6 +141,10 @@ final class Http2Connection
 
     public function sendHeaders(int $streamId, string $headerBlock, bool $endStream = false): void
     {
+        if ($this->goAwayReceived || $this->goAwaySent) {
+            throw new RuntimeException('cannot open new stream after GOAWAY');
+        }
+
         $state = $this->getOrCreateStreamState($streamId);
         $state->openLocal($endStream);
 
@@ -152,6 +169,23 @@ final class Http2Connection
 
         $flags = $endStream ? self::FLAG_END_STREAM : 0x00;
         $this->frameWriter->writeFrame(self::FRAME_TYPE_DATA, $flags, $streamId, $payload);
+    }
+
+    public function resetStream(int $streamId, int $errorCode = 0): void
+    {
+        if ($streamId === 0) {
+            throw new RuntimeException('RST_STREAM on stream 0 is invalid');
+        }
+
+        $this->getOrCreateStreamState($streamId)->close();
+        $this->frameWriter->writeFrame(self::FRAME_TYPE_RST_STREAM, 0x00, $streamId, pack('N', $errorCode));
+    }
+
+    public function sendGoAway(int $lastStreamId = 0, int $errorCode = 0): void
+    {
+        $this->goAwaySent = true;
+        $payload = pack('NN', $lastStreamId & 0x7fffffff, $errorCode);
+        $this->frameWriter->writeFrame(self::FRAME_TYPE_GOAWAY, 0x00, 0, $payload);
     }
 
     public function dataToSend(): string
@@ -217,6 +251,45 @@ final class Http2Connection
         }
 
         $this->frameWriter->writeFrame(self::FRAME_TYPE_PING, self::FLAG_ACK, 0, $frame->payload);
+    }
+
+    /**
+     * @return list<Http2Event>
+     */
+    private function handleRstStreamFrame(Http2Frame $frame): array
+    {
+        if ($frame->streamId === 0) {
+            throw new RuntimeException('RST_STREAM on stream 0 is invalid');
+        }
+
+        if ($frame->length !== 4) {
+            throw new RuntimeException('RST_STREAM must have a 4-byte error code');
+        }
+
+        $errorCode = unpack('Ncode', $frame->payload)['code'];
+        $this->getOrCreateStreamState($frame->streamId)->close();
+
+        return [new Http2StreamResetEvent($frame->streamId, $errorCode)];
+    }
+
+    private function handleGoAwayFrame(Http2Frame $frame): Http2GoAwayReceivedEvent
+    {
+        if ($frame->streamId !== 0) {
+            throw new RuntimeException('GOAWAY must be sent on stream 0');
+        }
+
+        if ($frame->length < 8) {
+            throw new RuntimeException('GOAWAY must include last stream id and error code');
+        }
+
+        $parts = unpack('Nlast_stream_id/Nerror_code', substr($frame->payload, 0, 8));
+        $this->goAwayReceived = true;
+
+        return new Http2GoAwayReceivedEvent(
+            $frame,
+            $parts['last_stream_id'] & 0x7fffffff,
+            $parts['error_code'],
+        );
     }
 
     /**
