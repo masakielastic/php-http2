@@ -137,7 +137,7 @@ final class Http2Connection
     public function sendData(int $streamId, string $payload, bool $endStream = false): void
     {
         $state = $this->getOrCreateStreamState($streamId);
-        if (!$state->canSendData()) {
+        if (!$state->allowsLocalData()) {
             throw new Http2ProtocolException('DATA not allowed in current local stream state', self::ERROR_STREAM_CLOSED, $streamId, false);
         }
 
@@ -344,7 +344,7 @@ final class Http2Connection
     private function recordDataFrame(int $streamId, bool $endStream): Http2StreamState
     {
         $state = $this->getOrCreateStreamState($streamId);
-        if (!$state->headersReceived || !$state->canReceiveData()) {
+        if (!$state->headersReceived || !$state->allowsRemoteData()) {
             throw new Http2ProtocolException('DATA not allowed in current remote stream state', self::ERROR_STREAM_CLOSED, $streamId, false);
         }
 

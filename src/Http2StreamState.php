@@ -19,7 +19,7 @@ final class Http2StreamState
 
     public function openLocal(bool $endStream): void
     {
-        if (!$this->canSendHeaders()) {
+        if (!$this->allowsLocalHeaders()) {
             throw new Http2ProtocolException('HEADERS not allowed in current local stream state', 0x05, null, false);
         }
 
@@ -37,7 +37,7 @@ final class Http2StreamState
 
     public function openRemote(bool $endStream): void
     {
-        if (!$this->canReceiveHeaders()) {
+        if (!$this->allowsRemoteHeaders()) {
             throw new Http2ProtocolException('HEADERS not allowed in current remote stream state', 0x05, null, false);
         }
 
@@ -78,27 +78,37 @@ final class Http2StreamState
         return $this->state === self::STATE_HALF_CLOSED_REMOTE || $this->state === self::STATE_CLOSED;
     }
 
+    public function isRequestComplete(): bool
+    {
+        return $this->headersReceived && $this->isRemoteClosed() && !$this->requestEmitted;
+    }
+
+    public function isResponseComplete(): bool
+    {
+        return $this->locallyInitiated && $this->headersReceived && $this->isRemoteClosed() && !$this->responseEmitted;
+    }
+
     public function close(): void
     {
         $this->state = self::STATE_CLOSED;
     }
 
-    public function canSendHeaders(): bool
+    public function allowsLocalHeaders(): bool
     {
         return $this->state === self::STATE_IDLE || $this->state === self::STATE_OPEN || $this->state === self::STATE_HALF_CLOSED_REMOTE;
     }
 
-    public function canReceiveHeaders(): bool
+    public function allowsRemoteHeaders(): bool
     {
         return $this->state === self::STATE_IDLE || $this->state === self::STATE_OPEN || $this->state === self::STATE_HALF_CLOSED_LOCAL;
     }
 
-    public function canSendData(): bool
+    public function allowsLocalData(): bool
     {
         return $this->state === self::STATE_OPEN || $this->state === self::STATE_HALF_CLOSED_REMOTE;
     }
 
-    public function canReceiveData(): bool
+    public function allowsRemoteData(): bool
     {
         return $this->state === self::STATE_OPEN || $this->state === self::STATE_HALF_CLOSED_LOCAL;
     }

@@ -13,7 +13,7 @@ final class Http2RequestCompletionEmitter
             return null;
         }
 
-        if (!$state->headersReceived || !$state->isRemoteClosed() || $state->requestEmitted) {
+        if (!$state->isRequestComplete()) {
             return null;
         }
 
