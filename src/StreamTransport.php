@@ -14,12 +14,10 @@ final class StreamTransport implements Http2Transport
         stream_set_write_buffer($this->stream, 0);
     }
 
-    public function read(int $length): ?string
+    public function readSome(int $maxLength): ?string
     {
-        $buffer = '';
-
-        while (strlen($buffer) < $length) {
-            $chunk = fread($this->stream, $length - strlen($buffer));
+        while (true) {
+            $chunk = fread($this->stream, $maxLength);
             if ($chunk === false) {
                 return null;
             }
@@ -32,6 +30,20 @@ final class StreamTransport implements Http2Transport
 
                 usleep(10_000);
                 continue;
+            }
+
+            return $chunk;
+        }
+    }
+
+    public function read(int $length): ?string
+    {
+        $buffer = '';
+
+        while (strlen($buffer) < $length) {
+            $chunk = $this->readSome($length - strlen($buffer));
+            if ($chunk === null) {
+                return null;
             }
 
             $buffer .= $chunk;

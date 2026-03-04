@@ -5,6 +5,8 @@ interface Http2Transport
 {
     public function configure(int $timeoutSec): void;
 
+    public function readSome(int $maxLength): ?string;
+
     public function read(int $length): ?string;
 
     public function write(string $payload): void;

@@ -14,13 +14,23 @@ final class H2cSocketTransport implements Http2Transport
         socket_set_option($this->socket, SOL_SOCKET, SO_SNDTIMEO, $timeout);
     }
 
+    public function readSome(int $maxLength): ?string
+    {
+        $chunk = @socket_read($this->socket, $maxLength, PHP_BINARY_READ);
+        if ($chunk === false || $chunk === '') {
+            return null;
+        }
+
+        return $chunk;
+    }
+
     public function read(int $length): ?string
     {
         $buffer = '';
 
         while (strlen($buffer) < $length) {
-            $chunk = @socket_read($this->socket, $length - strlen($buffer), PHP_BINARY_READ);
-            if ($chunk === false || $chunk === '') {
+            $chunk = $this->readSome($length - strlen($buffer));
+            if ($chunk === null) {
                 return null;
             }
 
