@@ -5,9 +5,11 @@ final class Http2ServerConnection
 {
     private const DEFAULT_TIMEOUT_SEC = 5;
     private const MAX_FRAMES = 100;
+    private readonly Http2ServerErrorStats $errorStats;
 
     public function __construct(private readonly Logger $logger)
     {
+        $this->errorStats = new Http2ServerErrorStats();
     }
 
     public function serveStream(mixed $stream, ?string $negotiatedProtocol = null): void
@@ -70,6 +72,8 @@ final class Http2ServerConnection
                         $event->streamId !== null ? sprintf(', stream=%d', $event->streamId) : ''
                     ));
                     if ($event->connectionError) {
+                        $this->errorStats->recordConnectionProtocolError($event->message);
+                        $this->logger->log('[!] stats: ' . $this->errorStats->summary());
                         $this->flushOutbound($transport, $protocol);
                         return;
                     }
@@ -136,5 +140,10 @@ final class Http2ServerConnection
         if ($payload !== '') {
             $transport->write($payload);
         }
+    }
+
+    public function protocolErrorSummary(): string
+    {
+        return $this->errorStats->summary();
     }
 }

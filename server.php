@@ -18,6 +18,9 @@ usage:
 examples:
   php server.php 127.0.0.1 8080 --mode=h2c
   php server.php 127.0.0.1 18443 --mode=tls --cert=certs/dev-cert.pem --key=certs/dev-key.pem
+
+notes:
+  connection-level HTTP/2 protocol errors are counted and logged with a running summary
 TXT;
 }
 
