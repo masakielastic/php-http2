@@ -25,6 +25,7 @@ final class Http2Connection
     private readonly Http2IncrementalFrameDecoder $decoder;
     private readonly Http2OutboundBuffer $outboundBuffer;
     private readonly Http2BufferedFrameWriter $frameWriter;
+    private readonly Http2FrameSender $frameSender;
     private readonly Http2FrameProcessor $frameProcessor;
     private readonly Http2CompletionEventFactory $completionEventFactory;
     /** @var array<int, Http2StreamState> */
@@ -45,6 +46,7 @@ final class Http2Connection
         $this->decoder = new Http2IncrementalFrameDecoder();
         $this->outboundBuffer = new Http2OutboundBuffer();
         $this->frameWriter = new Http2BufferedFrameWriter($this->outboundBuffer);
+        $this->frameSender = new Http2FrameSender($this->frameWriter);
         $this->frameProcessor = new Http2FrameProcessor($this);
         $this->completionEventFactory = new Http2CompletionEventFactory($this->role);
     }
@@ -66,7 +68,7 @@ final class Http2Connection
         }
 
         $this->outboundBuffer->append(self::CLIENT_PREFACE);
-        $this->frameWriter->writeFrame(self::FRAME_TYPE_SETTINGS, 0x00, 0, '');
+        $this->frameSender->sendConnectionPrefaceAndSettings(self::CLIENT_PREFACE);
     }
 
     /**
@@ -131,12 +133,7 @@ final class Http2Connection
         $state = $this->getOrCreateStreamState($streamId);
         $state->openLocal($endStream);
 
-        $flags = self::FLAG_END_HEADERS;
-        if ($endStream) {
-            $flags |= self::FLAG_END_STREAM;
-        }
-
-        $this->frameWriter->writeFrame(self::FRAME_TYPE_HEADERS, $flags, $streamId, $headerBlock);
+        $this->frameSender->sendHeaders($streamId, $headerBlock, $endStream);
     }
 
     public function sendData(int $streamId, string $payload, bool $endStream = false): void
@@ -150,8 +147,7 @@ final class Http2Connection
             $state->markLocalClosed();
         }
 
-        $flags = $endStream ? self::FLAG_END_STREAM : 0x00;
-        $this->frameWriter->writeFrame(self::FRAME_TYPE_DATA, $flags, $streamId, $payload);
+        $this->frameSender->sendData($streamId, $payload, $endStream);
     }
 
     public function resetStream(int $streamId, int $errorCode = 0): void
@@ -161,14 +157,13 @@ final class Http2Connection
         }
 
         $this->getOrCreateStreamState($streamId)->close();
-        $this->frameWriter->writeFrame(self::FRAME_TYPE_RST_STREAM, 0x00, $streamId, pack('N', $errorCode));
+        $this->frameSender->sendRstStream($streamId, $errorCode);
     }
 
     public function sendGoAway(int $lastStreamId = 0, int $errorCode = 0): void
     {
         $this->goAwaySent = true;
-        $payload = pack('NN', $lastStreamId & 0x7fffffff, $errorCode);
-        $this->frameWriter->writeFrame(self::FRAME_TYPE_GOAWAY, 0x00, 0, $payload);
+        $this->frameSender->sendGoAway($lastStreamId, $errorCode);
     }
 
     public function dataToSend(): string
@@ -219,7 +214,7 @@ final class Http2Connection
             return [];
         }
 
-        $this->frameWriter->writeFrame(self::FRAME_TYPE_SETTINGS, self::FLAG_ACK, 0, '');
+        $this->frameSender->sendSettingsAck();
 
         return [new Http2SettingsReceivedEvent()];
     }
@@ -234,7 +229,7 @@ final class Http2Connection
             return;
         }
 
-        $this->frameWriter->writeFrame(self::FRAME_TYPE_PING, self::FLAG_ACK, 0, $frame->payload);
+        $this->frameSender->sendPingAck($frame->payload);
     }
 
     /**
