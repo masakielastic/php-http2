@@ -15,6 +15,8 @@ require_once __DIR__ . '/HpackHeaderDecoder.php';
 require_once __DIR__ . '/Http2ProtocolException.php';
 require_once __DIR__ . '/Http2StreamState.php';
 require_once __DIR__ . '/Http2ServerErrorStats.php';
+require_once __DIR__ . '/Http2PrefaceHandler.php';
+require_once __DIR__ . '/Http2ContinuationBuffer.php';
 require_once __DIR__ . '/Http2OutboundBuffer.php';
 require_once __DIR__ . '/Http2BufferedFrameWriter.php';
 require_once __DIR__ . '/Http2FrameSender.php';

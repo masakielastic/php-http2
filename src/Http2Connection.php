@@ -28,15 +28,12 @@ final class Http2Connection
     private readonly Http2FrameSender $frameSender;
     private readonly Http2FrameProcessor $frameProcessor;
     private readonly Http2CompletionEventFactory $completionEventFactory;
+    private readonly Http2PrefaceHandler $prefaceHandler;
+    private readonly Http2ContinuationBuffer $continuationBuffer;
     /** @var array<int, Http2StreamState> */
     private array $streams = [];
-    private string $prefaceBuffer = '';
-    private bool $prefaceReceived = false;
     private bool $goAwayReceived = false;
     private bool $goAwaySent = false;
-    private ?int $continuationStreamId = null;
-    private string $continuationHeaderBlock = '';
-    private bool $continuationEndStream = false;
 
     private function __construct(
         private readonly string $role,
@@ -49,6 +46,8 @@ final class Http2Connection
         $this->frameSender = new Http2FrameSender($this->frameWriter);
         $this->frameProcessor = new Http2FrameProcessor($this);
         $this->completionEventFactory = new Http2CompletionEventFactory($this->role);
+        $this->prefaceHandler = new Http2PrefaceHandler(self::CLIENT_PREFACE);
+        $this->continuationBuffer = new Http2ContinuationBuffer();
     }
 
     public static function client(): self
@@ -111,8 +110,13 @@ final class Http2Connection
             throw new Http2ProtocolException('received frame after GOAWAY', self::ERROR_PROTOCOL_ERROR, $frame->streamId ?: null, true);
         }
 
-        if ($this->continuationStreamId !== null && $frame->type !== self::FRAME_TYPE_CONTINUATION) {
-            throw new Http2ProtocolException('expected CONTINUATION frame', self::ERROR_PROTOCOL_ERROR, $frame->streamId ?: $this->continuationStreamId, true);
+        if ($this->continuationBuffer->expectsContinuation() && $frame->type !== self::FRAME_TYPE_CONTINUATION) {
+            throw new Http2ProtocolException(
+                'expected CONTINUATION frame',
+                self::ERROR_PROTOCOL_ERROR,
+                $frame->streamId ?: $this->continuationBuffer->expectedStreamId(),
+                true
+            );
         }
     }
 
@@ -176,29 +180,15 @@ final class Http2Connection
      */
     private function consumePreface(string $payload, array &$events): string
     {
-        if ($this->prefaceReceived) {
-            return $payload;
-        }
-
-        $remaining = strlen(self::CLIENT_PREFACE) - strlen($this->prefaceBuffer);
-        $chunk = substr($payload, 0, $remaining);
-        $this->prefaceBuffer .= $chunk;
-        $payload = (string) substr($payload, strlen($chunk));
-
-        if (strlen($this->prefaceBuffer) < strlen(self::CLIENT_PREFACE)) {
-            return '';
-        }
-
-        if ($this->prefaceBuffer !== self::CLIENT_PREFACE) {
-            $events[] = $this->failConnection('invalid client preface', self::ERROR_PROTOCOL_ERROR);
-            return '';
-        }
-
-        $this->prefaceReceived = true;
-        $events[] = new Http2ConnectionPrefaceReceivedEvent();
-        $this->frameWriter->writeFrame(self::FRAME_TYPE_SETTINGS, 0x00, 0, '');
-
-        return $payload;
+        return $this->prefaceHandler->consume(
+            $payload,
+            $events,
+            function (array &$events): void {
+                $events[] = new Http2ConnectionPrefaceReceivedEvent();
+                $this->frameWriter->writeFrame(self::FRAME_TYPE_SETTINGS, 0x00, 0, '');
+            },
+            fn (): Http2ProtocolErrorEvent => $this->failConnection('invalid client preface', self::ERROR_PROTOCOL_ERROR),
+        );
     }
 
     /**
@@ -285,13 +275,11 @@ final class Http2Connection
             return $this->buildCompletedHeadersEvents($frame->streamId, $frame->payload, $endStream);
         }
 
-        if ($this->continuationStreamId !== null) {
+        if ($this->continuationBuffer->expectsContinuation()) {
             throw new Http2ProtocolException('invalid CONTINUATION sequence', self::ERROR_PROTOCOL_ERROR, $frame->streamId, true);
         }
 
-        $this->continuationStreamId = $frame->streamId;
-        $this->continuationHeaderBlock = $frame->payload;
-        $this->continuationEndStream = $endStream;
+        $this->continuationBuffer->begin($frame->streamId, $frame->payload, $endStream);
 
         return [];
     }
@@ -301,24 +289,21 @@ final class Http2Connection
      */
     private function handleContinuationFrame(Http2Frame $frame): array
     {
-        if ($this->continuationStreamId === null || $frame->streamId !== $this->continuationStreamId) {
+        if (!$this->continuationBuffer->expectsContinuation() || $frame->streamId !== $this->continuationBuffer->expectedStreamId()) {
             throw new Http2ProtocolException('invalid CONTINUATION sequence', self::ERROR_PROTOCOL_ERROR, $frame->streamId, true);
         }
 
-        $this->continuationHeaderBlock .= $frame->payload;
+        $this->continuationBuffer->append($frame);
         if (($frame->flags & self::FLAG_END_HEADERS) === 0) {
             return [];
         }
 
+        $continuation = $this->continuationBuffer->release();
         $events = $this->buildCompletedHeadersEvents(
-            $this->continuationStreamId,
-            $this->continuationHeaderBlock,
-            $this->continuationEndStream,
+            $continuation['streamId'],
+            $continuation['headerBlock'],
+            $continuation['endStream'],
         );
-
-        $this->continuationStreamId = null;
-        $this->continuationHeaderBlock = '';
-        $this->continuationEndStream = false;
 
         return $events;
     }
